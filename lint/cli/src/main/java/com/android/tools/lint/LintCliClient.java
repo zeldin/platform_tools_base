@@ -16,6 +16,8 @@
 
 package com.android.tools.lint;
 
+import static com.android.tools.lint.LintCliFlags.ERRNO_ERRORS;
+import static com.android.tools.lint.LintCliFlags.ERRNO_SUCCESS;
 import static com.android.tools.lint.client.api.IssueRegistry.LINT_ERROR;
 import static com.android.tools.lint.client.api.IssueRegistry.PARSER_ERROR;
 
@@ -24,13 +26,13 @@ import com.android.annotations.Nullable;
 import com.android.annotations.VisibleForTesting;
 import com.android.tools.lint.client.api.Configuration;
 import com.android.tools.lint.client.api.DefaultConfiguration;
-import com.android.tools.lint.client.api.IDomParser;
-import com.android.tools.lint.client.api.IJavaParser;
 import com.android.tools.lint.client.api.IssueRegistry;
+import com.android.tools.lint.client.api.JavaParser;
 import com.android.tools.lint.client.api.LintClient;
 import com.android.tools.lint.client.api.LintDriver;
 import com.android.tools.lint.client.api.LintListener;
 import com.android.tools.lint.client.api.LintRequest;
+import com.android.tools.lint.client.api.XmlParser;
 import com.android.tools.lint.detector.api.Context;
 import com.android.tools.lint.detector.api.Issue;
 import com.android.tools.lint.detector.api.LintUtils;
@@ -38,9 +40,11 @@ import com.android.tools.lint.detector.api.Location;
 import com.android.tools.lint.detector.api.Position;
 import com.android.tools.lint.detector.api.Project;
 import com.android.tools.lint.detector.api.Severity;
+import com.android.tools.lint.detector.api.TextFormat;
 import com.google.common.annotations.Beta;
 import com.google.common.base.Splitter;
 import com.google.common.collect.Maps;
+import com.google.common.collect.Sets;
 import com.google.common.io.Closeables;
 
 import java.io.File;
@@ -81,11 +85,13 @@ public class LintCliClient extends LintClient {
     protected IssueRegistry mRegistry;
     protected LintDriver mDriver;
     protected final LintCliFlags mFlags;
+    private Configuration mConfiguration;
 
     /** Creates a CLI driver */
     public LintCliClient() {
         mFlags = new LintCliFlags();
-        TextReporter reporter = new TextReporter(this, new PrintWriter(System.out, true), false);
+        TextReporter reporter = new TextReporter(this, mFlags, new PrintWriter(System.out, true),
+                false);
         mFlags.getReporters().add(reporter);
     }
 
@@ -97,26 +103,45 @@ public class LintCliClient extends LintClient {
      * Runs the static analysis command line driver. You need to add at least one error reporter
      * to the command line flags.
      */
-    public int run(IssueRegistry registry, List<File> files) throws IOException {
+    public int run(@NonNull IssueRegistry registry, @NonNull List<File> files) throws IOException {
         assert !mFlags.getReporters().isEmpty();
         mRegistry = registry;
         mDriver = new LintDriver(registry, this);
 
 
         mDriver.setAbbreviating(!mFlags.isShowEverything());
-        if (!mFlags.isQuiet()) {
-            mDriver.addLintListener(new ProgressPrinter());
-        }
+        addProgressPrinter();
 
-        mDriver.analyze(new LintRequest(this, files));
+        mDriver.analyze(createLintRequest(files));
 
         Collections.sort(mWarnings);
 
+        boolean hasConsoleOutput = false;
         for (Reporter reporter : mFlags.getReporters()) {
             reporter.write(mErrorCount, mWarningCount, mWarnings);
+            if (reporter instanceof TextReporter && ((TextReporter)reporter).isWriteToConsole()) {
+                hasConsoleOutput = true;
+            }
         }
 
-        return mFlags.isSetExitCode() ? (mHasErrors ? -1 : 0) : 0;
+        if (!mFlags.isQuiet() && !hasConsoleOutput) {
+            System.out.println(String.format(
+                    "Lint found %1$d errors and %2$d warnings", mErrorCount, mWarningCount));
+        }
+
+        return mFlags.isSetExitCode() ? (mHasErrors ? ERRNO_ERRORS : ERRNO_SUCCESS) : ERRNO_SUCCESS;
+    }
+
+    protected void addProgressPrinter() {
+        if (!mFlags.isQuiet()) {
+            mDriver.addLintListener(new ProgressPrinter());
+        }
+    }
+
+    /** Creates a lint request */
+    @NonNull
+    protected LintRequest createLintRequest(@NonNull List<File> files) {
+        return new LintRequest(this, files);
     }
 
     @Override
@@ -140,13 +165,13 @@ public class LintCliClient extends LintClient {
     }
 
     @Override
-    public IDomParser getDomParser() {
+    public XmlParser getXmlParser() {
         return new LintCliXmlParser();
     }
 
     @Override
     public Configuration getConfiguration(@NonNull Project project) {
-        return new CliConfiguration(mFlags.getDefaultConfiguration(), project);
+        return new CliConfiguration(getConfiguration(), project, mFlags.isFatalOnly());
     }
 
     /** File content cache */
@@ -164,8 +189,8 @@ public class LintCliClient extends LintClient {
     }
 
     @Override
-    public IJavaParser getJavaParser() {
-        return new LombokParser();
+    public JavaParser getJavaParser(@Nullable Project project) {
+        return new EcjParser(this, project);
     }
 
     @Override
@@ -175,7 +200,7 @@ public class LintCliClient extends LintClient {
             @NonNull Severity severity,
             @Nullable Location location,
             @NonNull String message,
-            @Nullable Object data) {
+            @NonNull TextFormat format) {
         assert context.isEnabled(issue) || issue == LINT_ERROR;
 
         if (severity == Severity.IGNORE) {
@@ -189,7 +214,11 @@ public class LintCliClient extends LintClient {
             mWarningCount++;
         }
 
-        Warning warning = new Warning(issue, message, severity, context.getProject(), data);
+        // Store the message in the raw format internally such that we can
+        // convert it to text for the text reporter, HTML for the HTML reporter
+        // and so on.
+        message = format.convertTo(message, TextFormat.RAW);
+        Warning warning = new Warning(issue, message, severity, context.getProject());
         mWarnings.add(warning);
 
         if (location != null) {
@@ -364,12 +393,17 @@ public class LintCliClient extends LintClient {
      * flags supplied on the command line
      */
     class CliConfiguration extends DefaultConfiguration {
-        CliConfiguration(@NonNull Configuration parent, @NonNull Project project) {
+        private boolean mFatalOnly;
+
+        CliConfiguration(@NonNull Configuration parent, @NonNull Project project,
+                boolean fatalOnly) {
             super(LintCliClient.this, project, parent);
+            mFatalOnly = fatalOnly;
         }
 
-        CliConfiguration(File lintFile) {
+        CliConfiguration(File lintFile, boolean fatalOnly) {
             super(LintCliClient.this, null /*project*/, null /*parent*/, lintFile);
+            mFatalOnly = fatalOnly;
         }
 
         @NonNull
@@ -377,7 +411,11 @@ public class LintCliClient extends LintClient {
         public Severity getSeverity(@NonNull Issue issue) {
             Severity severity = computeSeverity(issue);
 
-            if (mFlags.isWarningsAsErrors() && severity != Severity.IGNORE) {
+            if (mFatalOnly && severity != Severity.FATAL) {
+                return Severity.IGNORE;
+            }
+
+            if (mFlags.isWarningsAsErrors() && severity == Severity.WARNING) {
                 severity = Severity.ERROR;
             }
 
@@ -405,6 +443,11 @@ public class LintCliClient extends LintClient {
             Set<String> suppress = mFlags.getSuppressedIds();
             if (suppress.contains(id)) {
                 return Severity.IGNORE;
+            }
+
+            Severity manual = mFlags.getSeverityOverrides().get(id);
+            if (manual != null) {
+                return manual;
             }
 
             Set<String> enabled = mFlags.getEnabledIds();
@@ -566,9 +609,28 @@ public class LintCliClient extends LintClient {
         return mDriver;
     }
 
+    private static Set<File> sAlreadyWarned;
+
     /** Returns the configuration used by this client */
     Configuration getConfiguration() {
-        return mFlags.getDefaultConfiguration();
+        if (mConfiguration == null) {
+            File configFile = mFlags.getDefaultConfiguration();
+            if (configFile != null) {
+                if (!configFile.exists()) {
+                    if (sAlreadyWarned == null || !sAlreadyWarned.contains(configFile)) {
+                        log(Severity.ERROR, null,
+                                "Warning: Configuration file %1$s does not exist", configFile);
+                    }
+                    if (sAlreadyWarned == null) {
+                        sAlreadyWarned = Sets.newHashSet();
+                    }
+                    sAlreadyWarned.add(configFile);
+                }
+                mConfiguration = createConfigurationFromFile(configFile);
+            }
+        }
+
+        return mConfiguration;
     }
 
     /** Returns true if the given issue has been explicitly disabled */
@@ -577,10 +639,9 @@ public class LintCliClient extends LintClient {
     }
 
     public Configuration createConfigurationFromFile(File file) {
-        return new CliConfiguration(file);
+        return new CliConfiguration(file, mFlags.isFatalOnly());
     }
 
-    @SuppressWarnings("resource") // Eclipse doesn't know about Closeables.closeQuietly
     @Nullable
     String getRevision() {
         File file = findResource("tools" + File.separator +     //$NON-NLS-1$
@@ -599,10 +660,23 @@ public class LintCliClient extends LintClient {
             } catch (IOException e) {
                 // Couldn't find or read the version info: just print out unknown below
             } finally {
-                Closeables.closeQuietly(input);
+                try {
+                    Closeables.close(input, true /* swallowIOException */);
+                } catch (IOException e) {
+                    // cannot happen
+                }
             }
         }
 
         return null;
+    }
+
+    @NonNull
+    public LintCliFlags getFlags() {
+        return mFlags;
+    }
+
+    public boolean haveErrors() {
+        return mErrorCount > 0;
     }
 }

@@ -16,6 +16,8 @@
 
 package com.android.ddmlib;
 
+import com.android.annotations.NonNull;
+import com.android.annotations.Nullable;
 import com.android.ddmlib.HeapSegment.HeapSegmentElement;
 
 import java.nio.BufferUnderflowException;
@@ -99,27 +101,6 @@ public class ClientData {
     }
 
     /**
-     * Name of the value representing the max size of the heap, in the {@link Map} returned by
-     * {@link #getVmHeapInfo(int)}
-     */
-    public static final String HEAP_MAX_SIZE_BYTES = "maxSizeInBytes"; //$NON-NLS-1$
-    /**
-     * Name of the value representing the size of the heap, in the {@link Map} returned by
-     * {@link #getVmHeapInfo(int)}
-     */
-    public static final String HEAP_SIZE_BYTES = "sizeInBytes"; //$NON-NLS-1$
-    /**
-     * Name of the value representing the number of allocated bytes of the heap, in the
-     * {@link Map} returned by {@link #getVmHeapInfo(int)}
-     */
-    public static final String HEAP_BYTES_ALLOCATED = "bytesAllocated"; //$NON-NLS-1$
-    /**
-     * Name of the value representing the number of objects in the heap, in the {@link Map}
-     * returned by {@link #getVmHeapInfo(int)}
-     */
-    public static final String HEAP_OBJECTS_ALLOCATED = "objectsAllocated"; //$NON-NLS-1$
-
-    /**
      * String for feature enabling starting/stopping method profiling
      * @see #hasFeature(String)
      */
@@ -163,6 +144,7 @@ public class ClientData {
 
     private static IHprofDumpHandler sHprofDumpHandler;
     private static IMethodProfilingHandler sMethodProfilingHandler;
+    private static IAllocationTrackingHandler sAllocationTrackingHandler;
 
     // is this a DDM-aware client?
     private boolean mIsDdmAware;
@@ -182,6 +164,12 @@ public class ClientData {
     // client's user id is valid
     private boolean mValidUserId;
 
+    // client's ABI
+    private String mAbi;
+
+    // jvm flag: currently only indicates whether checkJni is enabled
+    private String mJvmFlags;
+
     // how interested are we in a debugger?
     private DebuggerStatus mDebuggerInterest;
 
@@ -196,9 +184,7 @@ public class ClientData {
     /** Native Heap data */
     private final HeapData mNativeHeapData = new HeapData();
 
-    private HashMap<Integer, HashMap<String, Long>> mHeapInfoMap =
-            new HashMap<Integer, HashMap<String, Long>>();
-
+    private HashMap<Integer, HeapInfo> mHeapInfoMap = new HashMap<Integer, HeapInfo>();
 
     /** library map info. Stored here since the backtrace data
      * is computed on a need to display basis.
@@ -317,6 +303,29 @@ public class ClientData {
         }
     }
 
+    public static class HeapInfo {
+        public long maxSizeInBytes;
+        public long sizeInBytes;
+        public long bytesAllocated;
+        public long objectsAllocated;
+        public long timeStamp;
+        public byte reason;
+
+        public HeapInfo(long maxSizeInBytes,
+                        long sizeInBytes,
+                        long bytesAllocated,
+                        long objectsAllocated,
+                        long timeStamp,
+                        byte reason) {
+            this.maxSizeInBytes = maxSizeInBytes;
+            this.sizeInBytes = sizeInBytes;
+            this.bytesAllocated = bytesAllocated;
+            this.objectsAllocated = objectsAllocated;
+            this.timeStamp = timeStamp;
+            this.reason = reason;
+        }
+    }
+
     /**
      * Handlers able to act on HPROF dumps.
      */
@@ -376,6 +385,19 @@ public class ClientData {
         void onEndFailure(Client client, String message);
     }
 
+    /*
+     * Handlers able to act on allocation tracking info
+     */
+    public interface IAllocationTrackingHandler {
+      /**
+       * Called when an allocation tracking was successful.
+       * @param data the data containing the encoded allocations.
+       *             See {@link AllocationsParser#parse(java.nio.ByteBuffer)} for parsing this data.
+       * @param client the client for which allocations were tracked.
+       */
+      void onSuccess(@NonNull byte[] data, @NonNull Client client);
+    }
+
     /**
      * Sets the handler to receive notifications when an HPROF dump succeeded or failed.
      */
@@ -396,6 +418,15 @@ public class ClientData {
 
     static IMethodProfilingHandler getMethodProfilingHandler() {
         return sMethodProfilingHandler;
+    }
+
+    public static void setAllocationTrackingHandler(@NonNull IAllocationTrackingHandler handler) {
+      sAllocationTrackingHandler = handler;
+    }
+
+    @Nullable
+    static IAllocationTrackingHandler getAllocationTrackingHandler() {
+      return sAllocationTrackingHandler;
     }
 
     /**
@@ -472,6 +503,17 @@ public class ClientData {
         return mValidUserId;
     }
 
+    /** Returns the abi flavor (32-bit or 64-bit) of the application, null if unknown or not set. */
+    @Nullable
+    public String getAbi() {
+        return mAbi;
+    }
+
+    /** Returns the VM flags in use, or null if unknown. */
+    public String getJvmFlags() {
+        return mJvmFlags;
+    }
+
     /**
      * Sets client description.
      *
@@ -499,6 +541,14 @@ public class ClientData {
         mValidUserId = true;
     }
 
+    void setAbi(String abi) {
+        mAbi = abi;
+    }
+
+    void setJvmFlags(String jvmFlags) {
+        mJvmFlags = jvmFlags;
+    }
+
     /**
      * Returns the debugger connection status.
      */
@@ -515,22 +565,22 @@ public class ClientData {
 
     /**
      * Sets the current heap info values for the specified heap.
-     *
-     * @param heapId The heap whose info to update
+     *  @param heapId The heap whose info to update
      * @param sizeInBytes The size of the heap, in bytes
      * @param bytesAllocated The number of bytes currently allocated in the heap
      * @param objectsAllocated The number of objects currently allocated in
-     *                         the heap
+     * @param timeStamp
+     * @param reason
      */
-    // TODO: keep track of timestamp, reason
-    synchronized void setHeapInfo(int heapId, long maxSizeInBytes,
-            long sizeInBytes, long bytesAllocated, long objectsAllocated) {
-        HashMap<String, Long> heapInfo = new HashMap<String, Long>();
-        heapInfo.put(HEAP_MAX_SIZE_BYTES, maxSizeInBytes);
-        heapInfo.put(HEAP_SIZE_BYTES, sizeInBytes);
-        heapInfo.put(HEAP_BYTES_ALLOCATED, bytesAllocated);
-        heapInfo.put(HEAP_OBJECTS_ALLOCATED, objectsAllocated);
-        mHeapInfoMap.put(heapId, heapInfo);
+    synchronized void setHeapInfo(int heapId,
+                                  long maxSizeInBytes,
+                                  long sizeInBytes,
+                                  long bytesAllocated,
+                                  long objectsAllocated,
+                                  long timeStamp,
+                                  byte reason) {
+        mHeapInfoMap.put(heapId, new HeapInfo(maxSizeInBytes, sizeInBytes, bytesAllocated,
+                objectsAllocated, timeStamp, reason));
     }
 
     /**
@@ -565,7 +615,7 @@ public class ClientData {
      * @return a map containing the info values for the specified heap.
      *         Returns <code>null</code> if the heap ID is unknown.
      */
-    public synchronized Map<String, Long> getVmHeapInfo(int heapId) {
+    public synchronized HeapInfo getVmHeapInfo(int heapId) {
         return mHeapInfoMap.get(heapId);
     }
 
@@ -671,8 +721,9 @@ public class ClientData {
      * Returns the list of tracked allocations.
      * @see Client#requestAllocationDetails()
      */
+    @Nullable
     public synchronized AllocationInfo[] getAllocations() {
-        return mAllocations;
+      return mAllocations;
     }
 
     void addFeature(String feature) {

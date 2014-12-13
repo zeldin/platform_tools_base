@@ -1,20 +1,38 @@
+/*
+ * Copyright (C) 2013 The Android Open Source Project
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 package com.android.tools.perflib.vmtrace;
 
 import com.android.annotations.NonNull;
 import com.android.annotations.VisibleForTesting;
+import com.android.ddmlib.ByteBufferUtil;
 import com.google.common.base.Charsets;
+import com.google.common.collect.Maps;
 import com.google.common.io.Closeables;
+import com.google.common.primitives.UnsignedInts;
 
 import java.io.BufferedReader;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.InputStreamReader;
+import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
-import java.nio.MappedByteBuffer;
-import java.nio.channels.FileChannel;
-import java.util.Iterator;
 import java.util.Map;
+import java.util.Set;
 
 public class VmTraceParser {
     private static final int TRACE_MAGIC = 0x574f4c53; // 'SLOW'
@@ -44,7 +62,7 @@ public class VmTraceParser {
 
     public void parse() throws IOException {
         long headerLength = parseHeader(mTraceFile);
-        MappedByteBuffer buffer = mapFile(mTraceFile, headerLength);
+        ByteBuffer buffer = ByteBufferUtil.mapFile(mTraceFile, headerLength, ByteOrder.LITTLE_ENDIAN);
         parseData(buffer);
         computeTimingStatistics();
     }
@@ -118,7 +136,11 @@ public class VmTraceParser {
             }
         } finally {
             if (in != null) {
-                Closeables.closeQuietly(in);
+                try {
+                    Closeables.close(in, true /* swallowIOException */);
+                } catch (IOException e) {
+                    // cannot happen
+                }
             }
         }
 
@@ -134,11 +156,11 @@ public class VmTraceParser {
 
             if (key.equals(KEY_CLOCK)) {
                 if (value.equals("thread-cpu")) {
-                    mTraceDataBuilder.setClockType(VmTraceData.ClockType.THREAD_CPU);
+                    mTraceDataBuilder.setVmClockType(VmTraceData.VmClockType.THREAD_CPU);
                 } else if (value.equals("wall")) {
-                    mTraceDataBuilder.setClockType(VmTraceData.ClockType.WALL);
+                    mTraceDataBuilder.setVmClockType(VmTraceData.VmClockType.WALL);
                 } else if (value.equals("dual")) {
-                    mTraceDataBuilder.setClockType(VmTraceData.ClockType.DUAL);
+                    mTraceDataBuilder.setVmClockType(VmTraceData.VmClockType.DUAL);
                 }
             } else if (key.equals(KEY_DATA_OVERFLOW)) {
                 mTraceDataBuilder.setDataFileOverflow(Boolean.parseBoolean(value));
@@ -213,7 +235,7 @@ public class VmTraceParser {
      *
      * All values are stored in little-endian order.
      */
-    private void parseData(MappedByteBuffer buffer) {
+    private void parseData(ByteBuffer buffer) {
         int recordSize = readDataFileHeader(buffer);
         parseMethodTraceData(buffer, recordSize);
     }
@@ -238,21 +260,21 @@ public class VmTraceParser {
      *
      * 32 bits of microseconds is 70 minutes.
      */
-    private void parseMethodTraceData(MappedByteBuffer buffer, int recordSize) {
+    private void parseMethodTraceData(ByteBuffer buffer, int recordSize) {
         int methodId;
         int threadId;
         int version = mTraceDataBuilder.getVersion();
-        VmTraceData.ClockType clockType = mTraceDataBuilder.getClockType();
+        VmTraceData.VmClockType vmClockType = mTraceDataBuilder.getVmClockType();
         while (buffer.hasRemaining()) {
             int threadTime;
             int globalTime;
 
             int positionStart = buffer.position();
 
-            threadId = version == 1 ? buffer.getInt() : buffer.getShort();
+            threadId = version == 1 ? buffer.get() : buffer.getShort();
             methodId = buffer.getInt();
 
-            switch (clockType) {
+            switch (vmClockType) {
                 case WALL:
                     globalTime = buffer.getInt();
                     threadTime = globalTime;
@@ -292,7 +314,8 @@ public class VmTraceParser {
             }
             methodId = methodId & ~0x03;
 
-            mTraceDataBuilder.addMethodAction(threadId, methodId, methodAction, threadTime, globalTime);
+            mTraceDataBuilder.addMethodAction(threadId, UnsignedInts.toLong(methodId), methodAction,
+                    threadTime, globalTime);
         }
     }
 
@@ -308,7 +331,7 @@ public class VmTraceParser {
      * @param buffer byte buffer pointing to the header
      * @return record size for each data entry following the header
      */
-    private int readDataFileHeader(MappedByteBuffer buffer) {
+    private int readDataFileHeader(ByteBuffer buffer) {
         int magic = buffer.getInt();
         if (magic != TRACE_MAGIC) {
             String msg = String.format("Error: magic number mismatch; got 0x%x, expected 0x%x\n",
@@ -361,59 +384,59 @@ public class VmTraceParser {
         return recordSize;
     }
 
-    private MappedByteBuffer mapFile(File f, long offset) throws IOException {
-        FileInputStream dataFile = new FileInputStream(f);
-        try {
-            FileChannel fc = dataFile.getChannel();
-            MappedByteBuffer buffer = fc.map(FileChannel.MapMode.READ_ONLY, offset,
-                    f.length() - offset);
-            buffer.order(ByteOrder.LITTLE_ENDIAN);
-            return buffer;
-        } finally {
-            dataFile.close(); // this *also* closes the associated channel, fc
-        }
-    }
-
     private void computeTimingStatistics() {
         VmTraceData data = getTraceData();
 
-        long max = 0;
-        for (int i = 0; i < data.getThreads().size(); i++) {
-            int threadId = data.getThreads().keyAt(i);
-            Call c = data.getTopLevelCall(threadId);
-            if (c != null) {
-                computePerMethodStats(c, data);
-
-                if (max < c.getInclusiveThreadTime()) {
-                    max = c.getInclusiveThreadTime();
-                }
+        ProfileDataBuilder builder = new ProfileDataBuilder();
+        for (ThreadInfo thread : data.getThreads()) {
+            Call c = thread.getTopLevelCall();
+            if (c == null) {
+                continue;
             }
+
+            builder.computeCallStats(c, null, thread);
         }
 
-        computePercentages(max, data);
-    }
-
-    private void computePercentages(long max, VmTraceData data) {
-        for (MethodInfo info : data.getMethods().values()) {
-            long threadTime = Math.min(info.getInclusiveThreadTimes(), max);
-            float percent = threadTime * 100.0f / max;
-            info.setInclusiveThreadPercent(percent);
+        for (Long methodId : builder.getMethodsWithProfileData()) {
+            MethodInfo method = data.getMethod(methodId);
+            method.setProfileData(builder.getProfileData(methodId));
         }
     }
 
-    private void computePerMethodStats(@NonNull Call top, @NonNull VmTraceData data) {
-        Iterator<Call> it = top.getCallHierarchyIterator();
-        while (it.hasNext()) {
-            Call c = it.next();
+    private static class ProfileDataBuilder {
+        /** Maps method ids to their corresponding method data builders */
+        private final Map<Long, MethodProfileData.Builder> mBuilderMap = Maps.newHashMap();
 
-            MethodInfo info = data.getMethod(c.getMethodId());
-            info.addExclusiveThreadTimes(c.getExclusiveThreadTime());
-
-            if (!c.isRecursive()) {
-                // In the case of a recursive call, the top level call's inclusive time
-                // already accounts for the entire inclusive time
-                info.addInclusiveThreadTimes(c.getInclusiveThreadTime());
+        public void computeCallStats(Call c, Call parent, ThreadInfo thread) {
+            long methodId = c.getMethodId();
+            MethodProfileData.Builder builder = getProfileDataBuilder(methodId);
+            builder.addCallTime(c, parent, thread);
+            builder.incrementInvocationCount(c, parent, thread);
+            if (c.isRecursive()) {
+                builder.setRecursive();
             }
+
+            for (Call callee: c.getCallees()) {
+                computeCallStats(callee, c, thread);
+            }
+        }
+
+        @NonNull
+        private MethodProfileData.Builder getProfileDataBuilder(long methodId) {
+            MethodProfileData.Builder builder = mBuilderMap.get(methodId);
+            if (builder == null) {
+                builder = new MethodProfileData.Builder();
+                mBuilderMap.put(methodId, builder);
+            }
+            return builder;
+        }
+
+        public Set<Long> getMethodsWithProfileData() {
+            return mBuilderMap.keySet();
+        }
+
+        public MethodProfileData getProfileData(Long methodId) {
+            return mBuilderMap.get(methodId).build();
         }
     }
 }

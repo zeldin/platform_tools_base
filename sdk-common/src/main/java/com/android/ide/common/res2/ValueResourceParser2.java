@@ -20,35 +20,32 @@ import static com.android.SdkConstants.ANDROID_NS_NAME_PREFIX;
 import static com.android.SdkConstants.ATTR_FORMAT;
 import static com.android.SdkConstants.ATTR_NAME;
 import static com.android.SdkConstants.ATTR_TYPE;
+import static com.android.SdkConstants.TAG_EAT_COMMENT;
 import static com.android.SdkConstants.TAG_ITEM;
+import static com.android.SdkConstants.TAG_SKIP;
 
 import com.android.annotations.NonNull;
 import com.android.annotations.Nullable;
 import com.android.resources.ResourceType;
+import com.android.utils.XmlUtils;
 import com.google.common.collect.Lists;
 import com.google.common.collect.Maps;
 import com.google.common.collect.Sets;
-import com.google.common.io.Closeables;
 
 import org.w3c.dom.Attr;
 import org.w3c.dom.Document;
 import org.w3c.dom.Node;
 import org.w3c.dom.NodeList;
-import org.xml.sax.InputSource;
 import org.xml.sax.SAXException;
 import org.xml.sax.SAXParseException;
 
-import java.io.BufferedInputStream;
 import java.io.File;
-import java.io.FileInputStream;
 import java.io.IOException;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
-import javax.xml.parsers.DocumentBuilder;
-import javax.xml.parsers.DocumentBuilderFactory;
 import javax.xml.parsers.ParserConfigurationException;
 
 /**
@@ -58,13 +55,14 @@ import javax.xml.parsers.ParserConfigurationException;
  */
 class ValueResourceParser2 {
 
+    @NonNull
     private final File mFile;
 
     /**
      * Creates the parser for a given file.
      * @param file the file to parse.
      */
-    ValueResourceParser2(File file) {
+    ValueResourceParser2(@NonNull File file) {
         mFile = file;
     }
 
@@ -98,7 +96,7 @@ class ValueResourceParser2 {
                 continue;
             }
 
-            ResourceItem resource = getResource(node);
+            ResourceItem resource = getResource(node, mFile);
             if (resource != null) {
                 // check this is not a dup
                 checkDuplicate(resource, map);
@@ -108,7 +106,7 @@ class ValueResourceParser2 {
                 if (resource.getType() == ResourceType.DECLARE_STYLEABLE) {
                     // Need to also create ATTR items for its children
                     try {
-                        ValueResourceParser2.addStyleableItems(node, resources, map);
+                        addStyleableItems(node, resources, map, mFile);
                     } catch (MergingException e) {
                         e.setFile(mFile);
                         throw e;
@@ -125,12 +123,14 @@ class ValueResourceParser2 {
      * @param node the node representing the resource.
      * @return a ResourceItem object or null.
      */
-    static ResourceItem getResource(Node node) {
-        ResourceType type = getType(node);
+    static ResourceItem getResource(@NonNull Node node, @Nullable File from) {
+        ResourceType type = getType(node, from);
         String name = getName(node);
 
-        if (type != null && name != null) {
-            return new ResourceItem(name, type, node);
+        if (name != null) {
+            if (type != null) {
+                return new ResourceItem(name, type, node);
+            }
         }
 
         return null;
@@ -141,7 +141,7 @@ class ValueResourceParser2 {
      * @param node the node
      * @return the ResourceType or null if it could not be inferred.
      */
-    static ResourceType getType(Node node) {
+    static ResourceType getType(@NonNull Node node, @Nullable File from) {
         String nodeName = node.getLocalName();
         String typeString = null;
 
@@ -150,16 +150,29 @@ class ValueResourceParser2 {
             if (attribute != null) {
                 typeString = attribute.getValue();
             }
+        } else if (TAG_EAT_COMMENT.equals(nodeName) || TAG_SKIP.equals(nodeName)) {
+            return null;
         } else {
             // the type is the name of the node.
             typeString = nodeName;
         }
 
         if (typeString != null) {
-            return ResourceType.getEnum(typeString);
+            ResourceType type = ResourceType.getEnum(typeString);
+            if (type != null) {
+                return type;
+            }
+
+            if (from != null) {
+                throw new RuntimeException(String.format("Unsupported type '%s' in file %s", typeString, from));
+            }
+            throw new RuntimeException(String.format("Unsupported type '%s'", typeString));
         }
 
-        return null;
+        if (from != null) {
+            throw new RuntimeException(String.format("Unsupported node '%s' in file %s", nodeName, from));
+        }
+        throw new RuntimeException(String.format("Unsupported node '%s'", nodeName));
     }
 
     /**
@@ -185,15 +198,8 @@ class ValueResourceParser2 {
      */
     @NonNull
     static Document parseDocument(File file) throws MergingException {
-        DocumentBuilderFactory factory = DocumentBuilderFactory.newInstance();
-        BufferedInputStream stream = null;
         try {
-            stream = new BufferedInputStream(new FileInputStream(file));
-            InputSource is = new InputSource(stream);
-            factory.setNamespaceAware(true);
-            factory.setValidating(false);
-            DocumentBuilder builder = factory.newDocumentBuilder();
-            return builder.parse(is);
+            return XmlUtils.parseUtfXmlFile(file, true /*namespaceAware*/);
         } catch (SAXParseException e) {
             String message = e.getLocalizedMessage();
             MergingException exception = new MergingException(message, e);
@@ -210,8 +216,6 @@ class ValueResourceParser2 {
             throw new MergingException(e).setFile(file);
         } catch (IOException e) {
             throw new MergingException(e).setFile(file);
-        } finally {
-            Closeables.closeQuietly(stream);
         }
     }
 
@@ -225,7 +229,8 @@ class ValueResourceParser2 {
      */
     static void addStyleableItems(@NonNull Node styleableNode,
                                   @NonNull List<ResourceItem> list,
-                                  @Nullable Map<ResourceType, Set<String>> map)
+                                  @Nullable Map<ResourceType, Set<String>> map,
+                                  @Nullable File from)
             throws MergingException {
         assert styleableNode.getNodeName().equals(ResourceType.DECLARE_STYLEABLE.getName());
         NodeList nodes = styleableNode.getChildNodes();
@@ -237,13 +242,13 @@ class ValueResourceParser2 {
                 continue;
             }
 
-            ResourceItem resource = getResource(node);
+            ResourceItem resource = getResource(node, from);
             if (resource != null) {
                 assert resource.getType() == ResourceType.ATTR;
 
                 // is the attribute in the android namespace?
                 if (!resource.getName().startsWith(ANDROID_NS_NAME_PREFIX)) {
-                    if (hasFormatAttribute(node)) {
+                    if (hasFormatAttribute(node) || XmlUtils.hasElementChildren(node)) {
                         checkDuplicate(resource, map);
                         resource.setIgnoredFromDiskMerge(true);
                         list.add(resource);

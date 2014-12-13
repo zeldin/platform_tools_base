@@ -32,7 +32,7 @@ public class StringFormatDetectorTest  extends AbstractCheckTest {
 
     public void testAll() throws Exception {
         assertEquals(
-            "src/test/pkg/StringFormatActivity.java:13: Error: Wrong argument type for formatting argument '#1' in hello: conversion is 'd', received String [StringFormatMatches]\n" +
+            "src/test/pkg/StringFormatActivity.java:13: Error: Wrong argument type for formatting argument '#1' in hello: conversion is 'd', received String (argument #2 in method call) [StringFormatMatches]\n" +
             "        String output1 = String.format(hello, target);\n" +
             "                                              ~~~~~~\n" +
             "    res/values-es/formatstrings.xml:3: Conflicting argument declaration here\n" +
@@ -40,6 +40,14 @@ public class StringFormatDetectorTest  extends AbstractCheckTest {
             "        String output2 = String.format(hello2, target, \"How are you\");\n" +
             "                         ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n" +
             "    res/values-es/formatstrings.xml:4: This definition requires 3 arguments\n" +
+            "src/test/pkg/StringFormatActivity.java:21: Error: Wrong argument type for formatting argument '#1' in score: conversion is 'd', received boolean (argument #2 in method call) [StringFormatMatches]\n" +
+            "        String output4 = String.format(score, true);  // wrong\n" +
+            "                                              ~~~~\n" +
+            "    res/values/formatstrings.xml:6: Conflicting argument declaration here\n" +
+            "src/test/pkg/StringFormatActivity.java:22: Error: Wrong argument type for formatting argument '#1' in score: conversion is 'd', received boolean (argument #2 in method call) [StringFormatMatches]\n" +
+            "        String output4 = String.format(score, won);   // wrong\n" +
+            "                                              ~~~\n" +
+            "    res/values/formatstrings.xml:6: Conflicting argument declaration here\n" +
             "src/test/pkg/StringFormatActivity.java:24: Error: Wrong argument count, format string hello2 requires 3 but format call supplies 2 [StringFormatMatches]\n" +
             "        String.format(getResources().getString(R.string.hello2), target, \"How are you\");\n" +
             "        ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n" +
@@ -52,13 +60,13 @@ public class StringFormatDetectorTest  extends AbstractCheckTest {
             "        getResources().getString(R.string.hello2, target, \"How are you\");\n" +
             "        ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n" +
             "    res/values-es/formatstrings.xml:4: This definition requires 3 arguments\n" +
-            "src/test/pkg/StringFormatActivity.java:33: Error: Wrong argument type for formatting argument '#1' in hello: conversion is 'd', received String [StringFormatMatches]\n" +
+            "src/test/pkg/StringFormatActivity.java:33: Error: Wrong argument type for formatting argument '#1' in hello: conversion is 'd', received String (argument #2 in method call) [StringFormatMatches]\n" +
             "        String output1 = String.format(hello, target);\n" +
             "                                              ~~~~~~\n" +
             "    res/values-es/formatstrings.xml:3: Conflicting argument declaration here\n" +
             "res/values-es/formatstrings.xml:3: Error: Inconsistent formatting types for argument #1 in format string hello ('%1$d'): Found both 's' and 'd' (in values/formatstrings.xml) [StringFormatMatches]\n" +
             "    <string name=\"hello\">%1$d</string>\n" +
-            "    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n" +
+            "                         ~~~~\n" +
             "    res/values/formatstrings.xml:3: Conflicting argument type here\n" +
             "res/values-es/formatstrings.xml:4: Warning: Inconsistent number of arguments in formatting string hello2; found both 2 and 3 [StringFormatCount]\n" +
             "    <string name=\"hello2\">%3$d: %1$s, %2$s?</string>\n" +
@@ -67,8 +75,7 @@ public class StringFormatDetectorTest  extends AbstractCheckTest {
             "res/values/formatstrings.xml:5: Warning: Formatting string 'missing' is not referencing numbered arguments [1, 2] [StringFormatCount]\n" +
             "    <string name=\"missing\">Hello %3$s World</string>\n" +
             "    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n" +
-            "7 errors, 2 warnings\n" +
-            "",
+            "9 errors, 2 warnings\n",
 
             lintProject(
                     "res/values/formatstrings.xml",
@@ -79,6 +86,10 @@ public class StringFormatDetectorTest  extends AbstractCheckTest {
     }
 
     public void testArgCount() {
+        assertEquals(0, StringFormatDetector.getFormatArgumentCount(
+                "%n%% ", null));
+        assertEquals(1, StringFormatDetector.getFormatArgumentCount(
+                "%n%% %s", null));
         assertEquals(3, StringFormatDetector.getFormatArgumentCount(
                 "First: %1$s, Second %2$s, Third %3$s", null));
         assertEquals(11, StringFormatDetector.getFormatArgumentCount(
@@ -97,6 +108,8 @@ public class StringFormatDetectorTest  extends AbstractCheckTest {
     }
 
     public void testArgType() {
+        assertEquals("s", StringFormatDetector.getFormatArgumentType(
+                "First: %n%% %1$s, Second %2$s, Third %3$s", 1));
         assertEquals("s", StringFormatDetector.getFormatArgumentType(
                 "First: %1$s, Second %2$s, Third %3$s", 1));
         assertEquals("d", StringFormatDetector.getFormatArgumentType(
@@ -166,20 +179,24 @@ public class StringFormatDetectorTest  extends AbstractCheckTest {
     public void testIssue42798() throws Exception {
         // http://code.google.com/p/android/issues/detail?id=42798
         // String playsCount = String.format(Locale.FRANCE, this.context.getString(R.string.gridview_views_count), article.playsCount);
-        assertEquals(""
-                + "src/test/pkg/StringFormat3.java:16: Error: Wrong argument type for formatting argument '#1' in gridview_views_count: conversion is 'd', received String [StringFormatMatches]\n"
-                + "                context.getString(R.string.gridview_views_count), \"wrong\");\n"
-                + "                                                                  ~~~~~~~\n"
-                + "    res/values/formatstrings5.xml:3: Conflicting argument declaration here\n"
-                + "src/test/pkg/StringFormat3.java:17: Error: Wrong argument type for formatting argument '#1' in gridview_views_count: conversion is 'd', received String [StringFormatMatches]\n"
-                + "        String s4 = String.format(context.getString(R.string.gridview_views_count), \"wrong\");\n"
-                + "                                                                                    ~~~~~~~\n"
-                + "    res/values/formatstrings5.xml:3: Conflicting argument declaration here\n"
-                + "src/test/pkg/StringFormat3.java:22: Error: Wrong argument type for formatting argument '#1' in gridview_views_count: conversion is 'd', received String [StringFormatMatches]\n"
-                + "                context.getString(R.string.gridview_views_count), \"string\");\n"
-                + "                                                                  ~~~~~~~~\n"
-                + "    res/values/formatstrings5.xml:3: Conflicting argument declaration here\n"
-                + "3 errors, 0 warnings\n",
+        assertEquals(
+                "src/test/pkg/StringFormat3.java:12: Error: Wrong argument type for formatting argument '#1' in gridview_views_count: conversion is 'd', received String (argument #3 in method call) [StringFormatMatches]\n" +
+                "                context.getString(R.string.gridview_views_count), article.playsCount);\n" +
+                "                                                                  ~~~~~~~~~~~~~~~~~~\n" +
+                "    res/values/formatstrings5.xml:3: Conflicting argument declaration here\n" +
+                "src/test/pkg/StringFormat3.java:16: Error: Wrong argument type for formatting argument '#1' in gridview_views_count: conversion is 'd', received String (argument #3 in method call) [StringFormatMatches]\n" +
+                "                context.getString(R.string.gridview_views_count), \"wrong\");\n" +
+                "                                                                  ~~~~~~~\n" +
+                "    res/values/formatstrings5.xml:3: Conflicting argument declaration here\n" +
+                "src/test/pkg/StringFormat3.java:17: Error: Wrong argument type for formatting argument '#1' in gridview_views_count: conversion is 'd', received String (argument #2 in method call) [StringFormatMatches]\n" +
+                "        String s4 = String.format(context.getString(R.string.gridview_views_count), \"wrong\");\n" +
+                "                                                                                    ~~~~~~~\n" +
+                "    res/values/formatstrings5.xml:3: Conflicting argument declaration here\n" +
+                "src/test/pkg/StringFormat3.java:22: Error: Wrong argument type for formatting argument '#1' in gridview_views_count: conversion is 'd', received String (argument #3 in method call) [StringFormatMatches]\n" +
+                "                context.getString(R.string.gridview_views_count), \"string\");\n" +
+                "                                                                  ~~~~~~~~\n" +
+                "    res/values/formatstrings5.xml:3: Conflicting argument declaration here\n" +
+                "4 errors, 0 warnings\n",
 
                 lintProject(
                         "res/values/formatstrings5.xml",
@@ -217,5 +234,152 @@ public class StringFormatDetectorTest  extends AbstractCheckTest {
                 lintProject(
                         "res/values/formatstrings7.xml",
                         "src/test/pkg/StringFormat5.java.txt=>src/test/pkg/StringFormat5.java"));
+    }
+
+    public void testNewlineChar() throws Exception {
+        // https://code.google.com/p/android/issues/detail?id=65692
+        assertEquals(""
+                + "src/test/pkg/StringFormat8.java:12: Error: Wrong argument count, format string amount_string requires 1 but format call supplies 0 [StringFormatMatches]\n"
+                + "        String amount4 = String.format(getResources().getString(R.string.amount_string));  // ERROR\n"
+                + "                         ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n"
+                + "    res/values/formatstrings8.xml:2: This definition requires 1 arguments\n"
+                + "src/test/pkg/StringFormat8.java:13: Error: Wrong argument count, format string amount_string requires 1 but format call supplies 2 [StringFormatMatches]\n"
+                + "        String amount5 = getResources().getString(R.string.amount_string, amount, amount); // ERROR\n"
+                + "                         ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n"
+                + "    res/values/formatstrings8.xml:2: This definition requires 1 arguments\n"
+                + "2 errors, 0 warnings\n",
+
+                lintProject(
+                        "res/values/formatstrings8.xml",
+                        "src/test/pkg/StringFormat8.java.txt=>src/test/pkg/StringFormat8.java"));
+    }
+
+    public void testIncremental() throws Exception {
+        assertEquals(
+                "src/test/pkg/StringFormatActivity.java:13: Error: Wrong argument type for formatting argument '#1' in hello: conversion is 'd', received String (argument #2 in method call) [StringFormatMatches]\n" +
+                "        String output1 = String.format(hello, target);\n" +
+                "                                              ~~~~~~\n" +
+                "    res/values-es/formatstrings.xml: Conflicting argument declaration here\n" +
+                "src/test/pkg/StringFormatActivity.java:15: Error: Wrong argument count, format string hello2 requires 3 but format call supplies 2 [StringFormatMatches]\n" +
+                "        String output2 = String.format(hello2, target, \"How are you\");\n" +
+                "                         ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n" +
+                "    res/values-es/formatstrings.xml: This definition requires 3 arguments\n" +
+                "src/test/pkg/StringFormatActivity.java:21: Error: Wrong argument type for formatting argument '#1' in score: conversion is 'd', received boolean (argument #2 in method call) [StringFormatMatches]\n" +
+                "        String output4 = String.format(score, true);  // wrong\n" +
+                "                                              ~~~~\n" +
+                "    res/values/formatstrings.xml: Conflicting argument declaration here\n" +
+                "src/test/pkg/StringFormatActivity.java:22: Error: Wrong argument type for formatting argument '#1' in score: conversion is 'd', received boolean (argument #2 in method call) [StringFormatMatches]\n" +
+                "        String output4 = String.format(score, won);   // wrong\n" +
+                "                                              ~~~\n" +
+                "    res/values/formatstrings.xml: Conflicting argument declaration here\n" +
+                "src/test/pkg/StringFormatActivity.java:24: Error: Wrong argument count, format string hello2 requires 3 but format call supplies 2 [StringFormatMatches]\n" +
+                "        String.format(getResources().getString(R.string.hello2), target, \"How are you\");\n" +
+                "        ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n" +
+                "    res/values-es/formatstrings.xml: This definition requires 3 arguments\n" +
+                "src/test/pkg/StringFormatActivity.java:25: Error: Wrong argument count, format string hello2 requires 3 but format call supplies 2 [StringFormatMatches]\n" +
+                "        getResources().getString(hello2, target, \"How are you\");\n" +
+                "        ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n" +
+                "    res/values-es/formatstrings.xml: This definition requires 3 arguments\n" +
+                "src/test/pkg/StringFormatActivity.java:26: Error: Wrong argument count, format string hello2 requires 3 but format call supplies 2 [StringFormatMatches]\n" +
+                "        getResources().getString(R.string.hello2, target, \"How are you\");\n" +
+                "        ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n" +
+                "    res/values-es/formatstrings.xml: This definition requires 3 arguments\n" +
+                "src/test/pkg/StringFormatActivity.java:33: Error: Wrong argument type for formatting argument '#1' in hello: conversion is 'd', received String (argument #2 in method call) [StringFormatMatches]\n" +
+                "        String output1 = String.format(hello, target);\n" +
+                "                                              ~~~~~~\n" +
+                "    res/values-es/formatstrings.xml: Conflicting argument declaration here\n" +
+                "res/values/formatstrings.xml: Error: Inconsistent formatting types for argument #1 in format string hello ('%1$s'): Found both 'd' and 's' (in values-es/formatstrings.xml) [StringFormatMatches]\n" +
+                "    res/values-es/formatstrings.xml: Conflicting argument type here\n" +
+                "res/values/formatstrings.xml: Warning: Inconsistent number of arguments in formatting string hello2; found both 3 and 2 [StringFormatCount]\n" +
+                "    res/values-es/formatstrings.xml: Conflicting number of arguments here\n" +
+                "9 errors, 1 warnings\n",
+
+        lintProjectIncrementally(
+                "src/test/pkg/StringFormatActivity.java",
+                "res/values/formatstrings.xml",
+                "res/values-es/formatstrings.xml",
+                // Java files must be renamed in source tree
+                "src/test/pkg/StringFormatActivity.java.txt=>src/test/pkg/StringFormatActivity.java"
+        ));
+    }
+
+    public void testNotStringFormat() throws Exception {
+        // Regression test for https://code.google.com/p/android/issues/detail?id=67597
+        assertEquals("No warnings.",
+
+                lintProject(
+                        "res/values/formatstrings3.xml",//"res/values/formatstrings.xml",
+                        "res/values/shared_prefs_keys.xml",
+                        "src/test/pkg/SharedPrefsTest6.java.txt=>src/test/pkg/SharedPrefsTest6.java"));
+    }
+
+    public void testNotStringFormatIncrementally() throws Exception {
+        // Regression test for https://code.google.com/p/android/issues/detail?id=67597
+        assertEquals("No warnings.",
+
+                lintProjectIncrementally(
+                        "src/test/pkg/SharedPrefsTest6.java",
+
+                        "res/values/formatstrings3.xml",//"res/values/formatstrings.xml",
+                        "res/values/shared_prefs_keys.xml",
+                        "src/test/pkg/SharedPrefsTest6.java.txt=>src/test/pkg/SharedPrefsTest6.java"));
+    }
+
+    public void testIncrementalNonMatch() throws Exception {
+        // Regression test for scenario where the below source files would crash during
+        // a string format check with
+        //   java.lang.IllegalStateException: No match found
+        //       at java.util.regex.Matcher.group(Matcher.java:468)
+        //       at com.android.tools.lint.checks.StringFormatDetector.checkStringFormatCall(StringFormatDetector.java:1028)
+        // ...
+        assertEquals("No warnings.",
+
+                lintProjectIncrementally(
+                        "src/test/pkg/StringFormatActivity3.java",
+                        "res/values/formatstrings11.xml",
+                        "res/values/formatstrings11.xml=>res/values-de/formatstrings11de.xml",
+                        "src/test/pkg/StringFormatActivity3.java.txt=>src/test/pkg/StringFormatActivity3.java"));
+    }
+
+    public void testXliff() throws Exception {
+        assertEquals(
+                "No warnings.",
+
+                lintProject(
+                        "res/values/formatstrings9.xml",
+                        "src/test/pkg/StringFormat9.java.txt=>src/test/pkg/StringFormat9.java"
+                ));
+    }
+
+    public void testXliffIncremental() throws Exception {
+        assertEquals(
+                "No warnings.",
+
+                lintProjectIncrementally(
+                        "src/test/pkg/StringFormat9.java",
+                        "res/values/formatstrings9.xml",
+                        "src/test/pkg/StringFormat9.java.txt=>src/test/pkg/StringFormat9.java"
+                ));
+    }
+
+    public void testBigDecimal() throws Exception {
+        // Regression test for https://code.google.com/p/android/issues/detail?id=69527
+        assertEquals("No warnings.",
+
+                lintProject(
+                        "res/values/formatstrings10.xml",
+                        "src/test/pkg/StringFormat10.java.txt=>src/test/pkg/StringFormat10.java"
+                ));
+
+    }
+
+    public void testWrapperClasses() throws Exception {
+        // Regression test for https://code.google.com/p/android/issues/detail?id=70496
+        assertEquals("No warnings.",
+
+                lintProject(
+                        "res/values/formatstrings10.xml",
+                        "src/test/pkg/StringFormat11.java.txt=>src/test/pkg/StringFormat11.java"
+                ));
     }
 }

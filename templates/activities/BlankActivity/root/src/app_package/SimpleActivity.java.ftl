@@ -1,42 +1,39 @@
 package ${packageName};
 
+import <#if appCompat>android.support.v7.app.ActionBarActivity<#else>android.app.Activity</#if>;
 import android.os.Bundle;
-import android.app.Activity;
 import android.view.Menu;
-<#if parentActivityClass != "">
 import android.view.MenuItem;
-import android.support.v4.app.NavUtils;
-<#if minApiLevel < 11>
-import android.annotation.TargetApi;
-import android.os.Build;
-</#if>
-</#if>
+<#if applicationPackage??>import ${applicationPackage}.R;</#if>
 
-public class ${activityClass} extends Activity {
+public class ${activityClass} extends ${(appCompat)?string('ActionBar','')}Activity {
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.${layoutName});
-        <#if parentActivityClass != "">
-        // Show the Up button in the action bar.
-        setupActionBar();
-        </#if>
     }
 
-    <#if parentActivityClass != "">
-    /**
-     * Set up the {@link android.app.ActionBar}<#if minApiLevel < 11>, if the API is available</#if>.
-     */
-    <#if minApiLevel < 11>@TargetApi(Build.VERSION_CODES.HONEYCOMB)
-    </#if>private void setupActionBar() {
-        <#if minApiLevel < 11>if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.HONEYCOMB) {</#if>
-        getActionBar().setDisplayHomeAsUpEnabled(true);
-        <#if minApiLevel < 11>}</#if>
+
+    @Override
+    public boolean onCreateOptionsMenu(Menu menu) {
+        // Inflate the menu; this adds items to the action bar if it is present.
+        getMenuInflater().inflate(R.menu.${menuName}, menu);
+        return true;
     }
-    </#if>
 
-    <#include "include_onCreateOptionsMenu.java.ftl">
-    <#include "include_onOptionsItemSelected.java.ftl">
+    @Override
+    public boolean onOptionsItemSelected(MenuItem item) {
+        // Handle action bar item clicks here. The action bar will
+        // automatically handle clicks on the Home/Up button, so long
+        // as you specify a parent activity in AndroidManifest.xml.
+        int id = item.getItemId();
 
+        //noinspection SimplifiableIfStatement
+        if (id == R.id.action_settings) {
+            return true;
+        }
+
+        return super.onOptionsItemSelected(item);
+    }
 }

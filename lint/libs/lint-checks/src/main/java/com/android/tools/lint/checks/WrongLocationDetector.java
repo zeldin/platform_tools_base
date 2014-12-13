@@ -37,7 +37,6 @@ public class WrongLocationDetector extends LayoutDetector {
     public static final Issue ISSUE = Issue.create(
             "WrongFolder", //$NON-NLS-1$
             "Resource file in the wrong `res` folder",
-            "Finds resource files that are placed in the wrong folders",
 
             "Resource files are sometimes placed in the wrong folder, and it can lead to " +
             "subtle bugs that are hard to understand. This check looks for problems in this " +
@@ -45,7 +44,7 @@ public class WrongLocationDetector extends LayoutDetector {
             "rather than the `values/` folder where it belongs.",
             Category.CORRECTNESS,
             8,
-            Severity.ERROR,
+            Severity.FATAL,
             new Implementation(
                     WrongLocationDetector.class,
                     Scope.RESOURCE_FILE_SCOPE));
@@ -65,7 +64,7 @@ public class WrongLocationDetector extends LayoutDetector {
         Element root = document.getDocumentElement();
         if (root != null && root.getTagName().equals(TAG_RESOURCES)) {
             context.report(ISSUE, root, context.getLocation(root),
-                    "This file should be placed in a values/ folder, not a layout/ folder", null);
+                    "This file should be placed in a `values`/ folder, not a `layout`/ folder");
         }
     }
 }

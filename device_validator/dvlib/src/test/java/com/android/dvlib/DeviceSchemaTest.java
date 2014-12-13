@@ -46,63 +46,46 @@ import org.xml.sax.helpers.DefaultHandler;
 
 public class DeviceSchemaTest extends TestCase {
 
-    private void checkFailure(Map<String, String> replacements, String regex) throws Exception {
-        // Generate XML stream with replacements
-        InputStream xmlStream = getReplacedStream(replacements);
+    //---- actual tests -----
 
-        ByteArrayOutputStream baos = new ByteArrayOutputStream();
-        assertFalse(
-                "Validation Assertion Failed, XML failed to validate when it was expected to pass\n",
-                DeviceSchema.validate(xmlStream, baos, null));
-        assertTrue(String.format("Regex Assertion Failed:\nExpected: %s\nActual: %s\n", regex, baos
-                .toString().trim()), baos.toString().trim().matches(regex));
-    }
-
-    private void checkFailure(String resource, String regex) throws Exception {
-        InputStream xml = DeviceSchemaTest.class.getResourceAsStream(resource);
-        ByteArrayOutputStream baos = new ByteArrayOutputStream();
-        assertFalse("Validation Assertion Failed, XML validated when it was expected to fail\n",
-                DeviceSchema.validate(xml, baos, null));
-        assertTrue(String.format("Regex Assertion Failed:\nExpected: %s\nActual: %s\n", regex, baos
-                .toString().trim()), baos.toString().trim().matches(regex));
-    }
-
-    private void checkSuccess(Map<String, String> replacements) throws Exception {
-        InputStream xmlStream = getReplacedStream(replacements);
-
-        ByteArrayOutputStream baos = new ByteArrayOutputStream();
-        assertTrue(DeviceSchema.validate(xmlStream, baos, null));
-        assertTrue(baos.toString().trim().matches(""));
-    }
-
-    public static InputStream getReplacedStream(Map<String, String> replacements) throws Exception {
-        InputStream xml = DeviceSchema.class.getResourceAsStream("devices_minimal.xml");
-        SAXParserFactory factory = SAXParserFactory.newInstance();
-        factory.setNamespaceAware(true);
-        SAXParser parser = factory.newSAXParser();
-        ReplacementHandler replacer = new ReplacementHandler(replacements);
-        parser.parse(xml, replacer);
-        Document doc = replacer.getGeneratedDocument();
-        Transformer tf = TransformerFactory.newInstance().newTransformer();
-        // Add indents so we're closer to user generated output
-        tf.setOutputProperty(OutputKeys.INDENT, "yes");
-        DOMSource source = new DOMSource(doc);
-        StringWriter out = new StringWriter();
-        StreamResult result = new StreamResult(out);
-        tf.transform(source, result);
-        return new ByteArrayInputStream(out.toString().getBytes("UTF-8"));
-    }
-
-    public void testValidXml() throws Exception {
+    public void testValidXml_v1() throws Exception {
         InputStream xml = DeviceSchemaTest.class.getResourceAsStream("devices.xml");
+        assertTrue(xml.markSupported());
+        xml.mark(500000);   // set mark to beginning of stream
+
+        // Check schema version
+        assertEquals(1, DeviceSchema.getXmlSchemaVersion(xml));
+
         ByteArrayOutputStream baos = new ByteArrayOutputStream();
         boolean result = DeviceSchema.validate(xml, baos, null);
         String output = baos.toString().trim();
         assertTrue(
-                String.format(
-                        "Validation Assertion Failed, XML failed to validate when it was expected to pass\n%s\n",output), result);
-        assertTrue(String.format("Regex Assertion Failed\nExpected No Output\nActual: %s\n", baos
-                .toString().trim()), baos.toString().trim().matches(""));
+                String.format("Validation Assertion Failed, XML failed to validate when it was expected to pass\n%s\n", output),
+                result);
+        assertTrue(String.format(
+                "Regex Assertion Failed\nExpected No Output\nActual: %s\n",
+                baos.toString().trim()),
+                baos.toString().trim().isEmpty());
+    }
+
+    public void testValidXml_v2() throws Exception {
+        InputStream xml = DeviceSchemaTest.class.getResourceAsStream("devices_v2.xml");
+        assertTrue(xml.markSupported());
+        xml.mark(500000);   // set mark to beginning of stream
+
+        // Check schema version
+        assertEquals(2, DeviceSchema.getXmlSchemaVersion(xml));
+
+        ByteArrayOutputStream baos = new ByteArrayOutputStream();
+        boolean result = DeviceSchema.validate(xml, baos, null);
+        String output = baos.toString().trim();
+        assertTrue(
+                String.format("Validation Assertion Failed, XML failed to validate when it was expected to pass\n%s\n", output),
+                result);
+        assertTrue(String.format(
+                "Regex Assertion Failed\nExpected No Output\nActual: %s\n",
+                baos.toString().trim()),
+                baos.toString().trim().isEmpty());
     }
 
     public void testNoHardware() throws Exception {
@@ -162,7 +145,6 @@ public class DeviceSchemaTest extends TestCase {
 
         checkFailure(replacements, "Error: cvc-minInclusive-valid: Value '-1.0'.*\n"
                 + "Error: cvc-type.3.1.3: The value '-1.0' of element 'd:diagonal-length'.*");
-
     }
 
     public void testInvalidOpenGLVersion() throws Exception {
@@ -202,6 +184,69 @@ public class DeviceSchemaTest extends TestCase {
         replacements.put(DeviceSchema.NODE_GPU, "");
         checkFailure(replacements, "Error: cvc-minLength-valid: Value '' with length = '0'.*\n"
                 + "Error: cvc-type.3.1.3: The value '' of element 'd:gpu' is not valid.*");
+    }
+
+    //---- helper methods -----
+
+    private void checkFailure(Map<String, String> replacements, String regex) throws Exception {
+        // Generate XML stream with replacements
+        InputStream xmlStream = getReplacedStream(replacements);
+        assertTrue(xmlStream.markSupported());
+        xmlStream.mark(500000);   // set mark to beginning of stream
+
+        ByteArrayOutputStream baos = new ByteArrayOutputStream();
+        assertFalse(
+                "Validation Assertion Failed, XML failed to validate when it was expected to pass\n",
+                DeviceSchema.validate(xmlStream, baos, null));
+        String actual = baos.toString().trim();
+        actual = actual.replace("\r\n", "\n");  // Fix Windows CRLF
+        assertTrue(
+                String.format("Regex Assertion Failed:\nExpected: %s\nActual: %s\n", regex, actual),
+                actual.matches(regex));
+    }
+
+    private void checkFailure(String resource, String regex) throws Exception {
+        InputStream xml = DeviceSchemaTest.class.getResourceAsStream(resource);
+        assertTrue(xml.markSupported());
+        xml.mark(500000);   // set mark to beginning of stream
+        ByteArrayOutputStream baos = new ByteArrayOutputStream();
+
+        assertFalse("Validation Assertion Failed, XML validated when it was expected to fail\n",
+                DeviceSchema.validate(xml, baos, null));
+
+        String actual = baos.toString().trim();
+        actual = actual.replace("\r\n", "\n");  // Fix Windows CRLF
+        assertTrue(
+                String.format("Regex Assertion Failed:\nExpected: %s\nActual: %s\n", regex, actual),
+                actual.matches(regex));
+    }
+
+    private void checkSuccess(Map<String, String> replacements) throws Exception {
+        InputStream xmlStream = getReplacedStream(replacements);
+        assertTrue(xmlStream.markSupported());
+        xmlStream.mark(500000);   // set mark to beginning of stream
+
+        ByteArrayOutputStream baos = new ByteArrayOutputStream();
+        assertTrue(DeviceSchema.validate(xmlStream, baos, null));
+        assertTrue(baos.toString().trim().matches(""));
+    }
+
+    public static InputStream getReplacedStream(Map<String, String> replacements) throws Exception {
+        InputStream xml = DeviceSchema.class.getResourceAsStream("devices_minimal.xml");
+        SAXParserFactory factory = SAXParserFactory.newInstance();
+        factory.setNamespaceAware(true);
+        SAXParser parser = factory.newSAXParser();
+        ReplacementHandler replacer = new ReplacementHandler(replacements);
+        parser.parse(xml, replacer);
+        Document doc = replacer.getGeneratedDocument();
+        Transformer tf = TransformerFactory.newInstance().newTransformer();
+        // Add indents so we're closer to user generated output
+        tf.setOutputProperty(OutputKeys.INDENT, "yes");
+        DOMSource source = new DOMSource(doc);
+        StringWriter out = new StringWriter();
+        StreamResult result = new StreamResult(out);
+        tf.transform(source, result);
+        return new ByteArrayInputStream(out.toString().getBytes("UTF-8"));
     }
 
     /**

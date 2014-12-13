@@ -24,6 +24,7 @@ import java.util.concurrent.Callable;
 import java.util.concurrent.CompletionService;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorCompletionService;
+import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 
@@ -40,21 +41,29 @@ import java.util.concurrent.Future;
  */
 public class WaitableExecutor<T> {
 
+    private final ExecutorService mExecutorService;
     private final CompletionService<T> mCompletionService;
     private final Set<Future<T>> mFutureSet = Sets.newHashSet();
 
+    /**
+     * Creates an executor that will use at most <var>nThreads</var> threads.
+     * @param nThreads the number of threads, or zero for default count (which is number of core)
+     */
     public WaitableExecutor(int nThreads) {
         if (nThreads < 1) {
-            mCompletionService = new ExecutorCompletionService<T>(
-                    Executors.newCachedThreadPool());
-        } else {
-            mCompletionService = new ExecutorCompletionService<T>(
-                    Executors.newFixedThreadPool(nThreads));
+            nThreads = Runtime.getRuntime().availableProcessors();
         }
+
+        mExecutorService = Executors.newFixedThreadPool(nThreads);
+        mCompletionService = new ExecutorCompletionService<T>(mExecutorService);
     }
 
+    /**
+     * Creates an executor that will use at most 1 thread per core.
+     */
     public WaitableExecutor() {
-        this(0);
+        mExecutorService = null;
+        mCompletionService = new ExecutorCompletionService<T>(ExecutorSingleton.getExecutor());
     }
 
     /**
@@ -106,6 +115,10 @@ public class WaitableExecutor<T> {
             } else {
                 throw new RuntimeException(cause);
             }
+        } finally {
+            if (mExecutorService != null) {
+                mExecutorService.shutdownNow();
+            }
         }
 
         return results;
@@ -139,26 +152,32 @@ public class WaitableExecutor<T> {
      */
     public List<TaskResult<T>> waitForAllTasks() throws InterruptedException {
         List<TaskResult<T>> results = Lists.newArrayListWithCapacity(mFutureSet.size());
-        while (!mFutureSet.isEmpty()) {
-            Future<T> future = mCompletionService.take();
+        try {
+            while (!mFutureSet.isEmpty()) {
+                Future<T> future = mCompletionService.take();
 
-            assert mFutureSet.contains(future);
-            mFutureSet.remove(future);
+                assert mFutureSet.contains(future);
+                mFutureSet.remove(future);
 
-            // Get the result from the task.
-            try {
-                results.add(TaskResult.withValue(future.get()));
-            } catch (ExecutionException e) {
-                // the original exception thrown by the task is the cause of this one.
-                Throwable cause = e.getCause();
+                // Get the result from the task.
+                try {
+                    results.add(TaskResult.withValue(future.get()));
+                } catch (ExecutionException e) {
+                    // the original exception thrown by the task is the cause of this one.
+                    Throwable cause = e.getCause();
 
-                //noinspection StatementWithEmptyBody
-                if (cause instanceof InterruptedException) {
-                    // if the task was cancelled we probably don't care about its result.
-                } else {
-                    // there was an error.
-                    results.add(new TaskResult<T>(cause));
+                    //noinspection StatementWithEmptyBody
+                    if (cause instanceof InterruptedException) {
+                        // if the task was cancelled we probably don't care about its result.
+                    } else {
+                        // there was an error.
+                        results.add(new TaskResult<T>(cause));
+                    }
                 }
+            }
+        } finally {
+            if (mExecutorService != null) {
+                mExecutorService.shutdownNow();
             }
         }
 

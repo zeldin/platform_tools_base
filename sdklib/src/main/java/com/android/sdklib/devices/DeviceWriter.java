@@ -16,7 +16,6 @@
 
 package com.android.sdklib.devices;
 
-import com.android.SdkConstants;
 import com.android.dvlib.DeviceSchema;
 import com.android.resources.UiMode;
 
@@ -26,9 +25,11 @@ import org.w3c.dom.Node;
 import org.w3c.dom.NodeList;
 
 import java.awt.Point;
+import java.io.File;
 import java.io.OutputStream;
 import java.util.Collection;
 import java.util.Locale;
+import java.util.Map;
 
 import javax.xml.XMLConstants;
 import javax.xml.parsers.DocumentBuilderFactory;
@@ -51,7 +52,7 @@ public class DeviceWriter {
 
     /**
      * Writes the XML definition of the given {@link Collection} of {@link Device}s according to
-     * {@link SdkConstants#NS_DEVICES_XSD} to the {@link OutputStream}.
+     * {@link DeviceSchema#NS_DEVICES_URI} to the {@link OutputStream}.
      * Note that it is up to the caller to close the {@link OutputStream}.
      * @param out The {@link OutputStream} to write the resulting XML to.
      * @param devices The {@link Device}s from which to generate the XML.
@@ -63,11 +64,12 @@ public class DeviceWriter {
             ParserConfigurationException,
             TransformerFactoryConfigurationError,
             TransformerException {
+
         Document doc = DocumentBuilderFactory.newInstance().newDocumentBuilder().newDocument();
         Element root = doc.createElement(PREFIX + DeviceSchema.NODE_DEVICES);
         root.setAttribute(XMLConstants.XMLNS_ATTRIBUTE + ":xsi",
                 XMLConstants.W3C_XML_SCHEMA_INSTANCE_NS_URI);
-        root.setAttribute(XMLConstants.XMLNS_ATTRIBUTE + ":" + LOCAL_NS, SdkConstants.NS_DEVICES_XSD);
+        root.setAttribute(XMLConstants.XMLNS_ATTRIBUTE + ":" + LOCAL_NS, DeviceSchema.NS_DEVICES_URI);
         doc.appendChild(root);
 
         for (Device device : devices) {
@@ -75,8 +77,16 @@ public class DeviceWriter {
             root.appendChild(deviceNode);
 
             Element name = doc.createElement(PREFIX + DeviceSchema.NODE_NAME);
-            name.appendChild(doc.createTextNode(device.getName()));
+            String displayName = device.getDisplayName();
+            name.appendChild(doc.createTextNode(displayName));
             deviceNode.appendChild(name);
+
+            String deviceId = device.getId();
+            if (!deviceId.equals(displayName)) {
+                Element id = doc.createElement(PREFIX + DeviceSchema.NODE_ID);
+                id.appendChild(doc.createTextNode(deviceId));
+                deviceNode.appendChild(id);
+            }
 
             Element manufacturer = doc.createElement(PREFIX + DeviceSchema.NODE_MANUFACTURER);
             manufacturer.appendChild(doc.createTextNode(device.getManufacturer()));
@@ -89,6 +99,29 @@ public class DeviceWriter {
             }
             for (State s : device.getAllStates()) {
                 deviceNode.appendChild(generateStateNode(s, doc, device.getDefaultHardware()));
+            }
+
+            String tagId = device.getTagId();
+            if (tagId != null) {
+                Element e = doc.createElement(PREFIX + DeviceSchema.NODE_TAG_ID);
+                e.appendChild(doc.createTextNode(tagId));
+                deviceNode.appendChild(e);
+            }
+
+            Map<String, String> bootProps = device.getBootProps();
+            if (bootProps != null && !bootProps.isEmpty()) {
+                Element props = doc.createElement(PREFIX + DeviceSchema.NODE_BOOT_PROPS);
+                for (Map.Entry<String, String> bootProp : bootProps.entrySet()) {
+                    Element prop = doc.createElement(PREFIX + DeviceSchema.NODE_BOOT_PROP);
+                    Element propName = doc.createElement(PREFIX + DeviceSchema.NODE_PROP_NAME);
+                    propName.appendChild(doc.createTextNode(bootProp.getKey()));
+                    Element propValue = doc.createElement(PREFIX + DeviceSchema.NODE_PROP_VALUE);
+                    propValue.appendChild(doc.createTextNode(bootProp.getValue()));
+                    prop.appendChild(propName);
+                    prop.appendChild(propValue);
+                    props.appendChild(prop);
+                }
+                deviceNode.appendChild(props);
             }
         }
 
@@ -201,6 +234,12 @@ public class DeviceWriter {
         addElement(doc, hardware, DeviceSchema.NODE_DOCK, sb.toString());
 
         addElement(doc, hardware, DeviceSchema.NODE_POWER_TYPE, hw.getChargeType().toString());
+
+        File skinPath = hw.getSkinFile();
+        if (skinPath != null) {
+            String canonicalPath = skinPath.getPath().replace(File.separatorChar, '/');
+            addElement(doc, hardware, DeviceSchema.NODE_SKIN, canonicalPath);
+        }
 
         return hardware;
     }

@@ -16,16 +16,27 @@
 
 package com.android.tools.lint.checks;
 
+import static com.android.SdkConstants.ANDROID_MANIFEST_XML;
+import static org.easymock.EasyMock.createNiceMock;
+import static org.easymock.EasyMock.expect;
+import static org.easymock.EasyMock.replay;
+
 import com.android.annotations.NonNull;
+import com.android.annotations.Nullable;
+import com.android.builder.model.ApiVersion;
+import com.android.builder.model.ProductFlavor;
+import com.android.builder.model.Variant;
 import com.android.tools.lint.client.api.LintClient;
 import com.android.tools.lint.detector.api.Detector;
 import com.android.tools.lint.detector.api.Issue;
 import com.android.tools.lint.detector.api.Project;
+import com.google.common.collect.Lists;
 
 import java.io.File;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Set;
 
 @SuppressWarnings("javadoc")
@@ -118,7 +129,7 @@ public class ManifestDetectorTest extends AbstractCheckTest {
         assertEquals(
             "AndroidManifest.xml:7: Warning: Not targeting the latest versions of Android; compatibility modes apply. Consider testing and updating this version. Consult the android.os.Build.VERSION_CODES javadoc for details. [OldTargetApi]\n" +
             "    <uses-sdk android:minSdkVersion=\"10\" android:targetSdkVersion=\"14\" />\n" +
-            "    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n" +
+            "                                         ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n" +
             "0 errors, 1 warnings\n",
             lintProject(
                     "oldtarget.xml=>AndroidManifest.xml",
@@ -202,6 +213,25 @@ public class ManifestDetectorTest extends AbstractCheckTest {
                     "res/values/strings.xml"));
     }
 
+    public void testDuplicateActivityAcrossSourceSets() throws Exception {
+        mEnabled = Collections.singleton(ManifestDetector.DUPLICATE_ACTIVITY);
+        File master = getProjectDir("MasterProject",
+                // Master project
+                "AndroidManifest.xml=>AndroidManifest.xml",
+                "multiproject/main-merge.properties=>project.properties",
+                "multiproject/MainCode.java.txt=>src/foo/main/MainCode.java"
+        );
+        File library = getProjectDir("LibraryProject",
+                // Library project
+                "AndroidManifest.xml=>AndroidManifest.xml",
+                "multiproject/library.properties=>project.properties",
+                "multiproject/LibraryCode.java.txt=>src/foo/library/LibraryCode.java",
+                "multiproject/strings.xml=>res/values/strings.xml"
+        );
+        assertEquals("No warnings.",
+                checkLint(Arrays.asList(master, library)));
+    }
+
     public void testIgnoreDuplicateActivity() throws Exception {
         mEnabled = Collections.singleton(ManifestDetector.DUPLICATE_ACTIVITY);
         assertEquals(
@@ -242,11 +272,20 @@ public class ManifestDetectorTest extends AbstractCheckTest {
         assertEquals(
                 "No warnings.",
                 lintProject(
-                        "AndroidManifest.xml",
                         "apicheck/minsdk1.xml=>AndroidManifest.xml",
                         "res/values/strings.xml"));
     }
 
+    public void testAllowBackupOk3() throws Exception {
+        // Not flagged in library projects
+        mEnabled = Collections.singleton(ManifestDetector.ALLOW_BACKUP);
+        assertEquals(
+                "No warnings.",
+                lintProject(
+                        "AndroidManifest.xml",
+                        "multiproject/library.properties=>project.properties",
+                        "res/values/strings.xml"));
+    }
 
     public void testAllowIgnore() throws Exception {
         mEnabled = Collections.singleton(ManifestDetector.ALLOW_BACKUP);
@@ -320,19 +359,16 @@ public class ManifestDetectorTest extends AbstractCheckTest {
     public void testIllegalReference() throws Exception {
         mEnabled = Collections.singleton(ManifestDetector.ILLEGAL_REFERENCE);
         assertEquals(""
-            + "AndroidManifest.xml:2: Warning: The android:versionCode cannot be a resource url, it must be a literal integer [IllegalResourceRef]\n"
-            + "<manifest xmlns:android=\"http://schemas.android.com/apk/res/android\"\n"
-            + "^\n"
-            + "AndroidManifest.xml:2: Warning: The android:versionName cannot be a resource url, it must be a literal string [IllegalResourceRef]\n"
-            + "<manifest xmlns:android=\"http://schemas.android.com/apk/res/android\"\n"
-            + "^\n"
+            + "AndroidManifest.xml:4: Warning: The android:versionCode cannot be a resource url, it must be a literal integer [IllegalResourceRef]\n"
+            + "    android:versionCode=\"@dimen/versionCode\"\n"
+            + "    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n"
             + "AndroidManifest.xml:7: Warning: The android:minSdkVersion cannot be a resource url, it must be a literal integer (or string if a preview codename) [IllegalResourceRef]\n"
             + "    <uses-sdk android:minSdkVersion=\"@dimen/minSdkVersion\" android:targetSdkVersion=\"@dimen/targetSdkVersion\" />\n"
-            + "    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n"
+            + "              ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n"
             + "AndroidManifest.xml:7: Warning: The android:targetSdkVersion cannot be a resource url, it must be a literal integer (or string if a preview codename) [IllegalResourceRef]\n"
             + "    <uses-sdk android:minSdkVersion=\"@dimen/minSdkVersion\" android:targetSdkVersion=\"@dimen/targetSdkVersion\" />\n"
-            + "    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n"
-            + "0 errors, 4 warnings\n",
+            + "                                                           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n"
+            + "0 errors, 3 warnings\n",
 
             lintProject("illegal_version.xml=>AndroidManifest.xml"));
     }
@@ -370,6 +406,16 @@ public class ManifestDetectorTest extends AbstractCheckTest {
                 "res/values/strings.xml"));
     }
 
+    public void testMissingApplicationIconInLibrary() throws Exception {
+        mEnabled = Collections.singleton(ManifestDetector.APPLICATION_ICON);
+        assertEquals(
+            "No warnings.",
+            lintProject(
+                "missing_application_icon.xml=>AndroidManifest.xml",
+                "multiproject/library.properties=>project.properties",
+                "res/values/strings.xml"));
+    }
+
     public void testMissingApplicationIconOk() throws Exception {
         mEnabled = Collections.singleton(ManifestDetector.APPLICATION_ICON);
         assertEquals(
@@ -393,5 +439,170 @@ public class ManifestDetectorTest extends AbstractCheckTest {
                 + "                       ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n"
                 + "0 errors, 3 warnings\n",
                 lintProject("deviceadmin.xml=>AndroidManifest.xml"));
+    }
+
+    public void testMockLocations() throws Exception {
+        mEnabled = Collections.singleton(ManifestDetector.MOCK_LOCATION);
+        assertEquals(""
+                + "AndroidManifest.xml:9: Error: Mock locations should only be requested in a debug-specific manifest file (typically src/debug/AndroidManifest.xml) [MockLocation]\n"
+                + "    <uses-permission android:name=\"android.permission.ACCESS_MOCK_LOCATION\" /> \n"
+                + "                     ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n"
+                + "1 errors, 0 warnings\n",
+                lintProject(
+                        "mock_location.xml=>AndroidManifest.xml",
+                        "multiproject/library.properties=>build.gradle")); // dummy; only name counts
+        // TODO: When we have an instantiatable gradle model, test with real model and verify
+        // that a manifest file in a debug build type does not get flagged.
+    }
+
+    public void testMockLocationsOk() throws Exception {
+        // Not a Gradle project
+        mEnabled = Collections.singleton(ManifestDetector.MOCK_LOCATION);
+        assertEquals(""
+                + "No warnings.",
+                lintProject(
+                        "mock_location.xml=>AndroidManifest.xml"));
+    }
+
+    public void testGradleOverrides() throws Exception {
+        mEnabled = Collections.singleton(ManifestDetector.GRADLE_OVERRIDES);
+        assertEquals(""
+                + "AndroidManifest.xml:4: Warning: This versionCode value (1) is not used; it is always overridden by the value specified in the Gradle build script (2) [GradleOverrides]\n"
+                + "    android:versionCode=\"1\"\n"
+                + "    ~~~~~~~~~~~~~~~~~~~~~~~\n"
+                + "AndroidManifest.xml:5: Warning: This versionName value (1.0) is not used; it is always overridden by the value specified in the Gradle build script (MyName) [GradleOverrides]\n"
+                + "    android:versionName=\"1.0\" >\n"
+                + "    ~~~~~~~~~~~~~~~~~~~~~~~~~\n"
+                + "AndroidManifest.xml:7: Warning: This minSdkVersion value (14) is not used; it is always overridden by the value specified in the Gradle build script (5) [GradleOverrides]\n"
+                + "    <uses-sdk android:minSdkVersion=\"14\" android:targetSdkVersion=\"17\" />\n"
+                + "              ~~~~~~~~~~~~~~~~~~~~~~~~~~\n"
+                + "AndroidManifest.xml:7: Warning: This targetSdkVersion value (17) is not used; it is always overridden by the value specified in the Gradle build script (16) [GradleOverrides]\n"
+                + "    <uses-sdk android:minSdkVersion=\"14\" android:targetSdkVersion=\"17\" />\n"
+                + "                                         ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n"
+                + "0 errors, 4 warnings\n",
+                lintProject(
+                        "gradle_override.xml=>AndroidManifest.xml",
+                        "multiproject/library.properties=>build.gradle")); // dummy; only name counts
+    }
+
+    public void testGradleOverridesOk() throws Exception {
+        mEnabled = Collections.singleton(ManifestDetector.GRADLE_OVERRIDES);
+        // (See custom logic in #createClient which returns -1/null for the merged flavor
+        // from this test, and not from testGradleOverrides)
+        assertEquals(""
+                + "No warnings.",
+                lintProject(
+                        "gradle_override.xml=>AndroidManifest.xml",
+                        "multiproject/library.properties=>build.gradle")); // dummy; only name counts
+    }
+
+    public void testManifestPackagePlaceholder() throws Exception {
+        mEnabled = Collections.singleton(ManifestDetector.GRADLE_OVERRIDES);
+        assertEquals(""
+                + "AndroidManifest.xml:3: Warning: Cannot use placeholder for the package in the manifest; set applicationId in build.gradle instead [GradleOverrides]\n"
+                + "    package=\"${packageName}\" >\n"
+                + "    ~~~~~~~~~~~~~~~~~~~~~~~~\n"
+                + "0 errors, 1 warnings\n",
+
+                lintProject(
+                        "gradle_override_placeholder.xml=>AndroidManifest.xml",
+                        "multiproject/library.properties=>build.gradle")); // dummy; only name counts
+    }
+
+    // Custom project which locates all manifest files in the project rather than just
+    // being hardcoded to the root level
+    private static class MyProject extends Project {
+        protected MyProject(@NonNull LintClient client, @NonNull File dir,
+                @NonNull File referenceDir) {
+            super(client, dir, referenceDir);
+        }
+
+        @NonNull
+        @Override
+        public List<File> getManifestFiles() {
+            if (mManifestFiles == null) {
+                mManifestFiles = Lists.newArrayList();
+                addManifestFiles(mDir);
+            }
+
+            return mManifestFiles;
+        }
+
+        private void addManifestFiles(File dir) {
+            if (dir.getName().equals(ANDROID_MANIFEST_XML)) {
+                mManifestFiles.add(dir);
+            } else if (dir.isDirectory()) {
+                File[] files = dir.listFiles();
+                if (files != null) {
+                    for (File file : files) {
+                        addManifestFiles(file);
+                    }
+                }
+            }
+        }
+    }
+
+    @Override
+    protected TestLintClient createClient() {
+        if (mEnabled.contains(ManifestDetector.MOCK_LOCATION)) {
+            return new TestLintClient() {
+                @NonNull
+                @Override
+                protected Project createProject(@NonNull File dir, @NonNull File referenceDir) {
+                    return new MyProject(this, dir, referenceDir);
+                }
+            };
+        } else if (mEnabled.contains(ManifestDetector.GRADLE_OVERRIDES)) {
+            return new TestLintClient() {
+                @NonNull
+                @Override
+                protected Project createProject(@NonNull File dir, @NonNull File referenceDir) {
+                    return new Project(this, dir, referenceDir) {
+                        @Override
+                        public boolean isGradleProject() {
+                            return true;
+                        }
+
+                        @Nullable
+                        @Override
+                        public Variant getCurrentVariant() {
+                            ProductFlavor flavor = createNiceMock(ProductFlavor.class);
+                            if (getName().equals("ManifestDetectorTest_testGradleOverridesOk") ||
+                                    getName().equals(
+                                        "ManifestDetectorTest_testManifestPackagePlaceholder")) {
+                                expect(flavor.getMinSdkVersion()).andReturn(null).anyTimes();
+                                expect(flavor.getTargetSdkVersion()).andReturn(null).anyTimes();
+                                expect(flavor.getVersionCode()).andReturn(null).anyTimes();
+                                expect(flavor.getVersionName()).andReturn(null).anyTimes();
+                            } else {
+                                assertEquals(getName(), "ManifestDetectorTest_testGradleOverrides");
+
+                                ApiVersion apiMock = createNiceMock(ApiVersion.class);
+                                expect(apiMock.getApiLevel()).andReturn(5);
+                                expect(apiMock.getApiString()).andReturn("5");
+                                expect(flavor.getMinSdkVersion()).andReturn(apiMock).anyTimes();
+                                replay(apiMock);
+
+                                apiMock = createNiceMock(ApiVersion.class);
+                                expect(apiMock.getApiLevel()).andReturn(16);
+                                expect(apiMock.getApiString()).andReturn("16");
+                                expect(flavor.getTargetSdkVersion()).andReturn(apiMock).anyTimes();
+                                replay(apiMock);
+
+                                expect(flavor.getVersionCode()).andReturn(2).anyTimes();
+                                expect(flavor.getVersionName()).andReturn("MyName").anyTimes();
+                            }
+                            replay(flavor);
+                            Variant mock = createNiceMock(Variant.class);
+                            expect(mock.getMergedFlavor()).andReturn(flavor).anyTimes();
+                            replay(mock);
+                            return mock;
+                        }
+                    };
+                }
+            };
+
+        }
+        return super.createClient();
     }
 }

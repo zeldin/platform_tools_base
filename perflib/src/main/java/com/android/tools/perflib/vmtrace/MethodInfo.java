@@ -16,6 +16,8 @@
 
 package com.android.tools.perflib.vmtrace;
 
+import com.android.annotations.NonNull;
+
 import java.util.Locale;
 
 public class MethodInfo {
@@ -26,16 +28,13 @@ public class MethodInfo {
     public final String srcPath;
     public final int srcLineNumber;
 
-    private long mInclusiveThreadTimes;
-    private long mExclusiveThreadTimes;
-
-    private float mInclusiveThreadPercent;
+    private MethodProfileData mProfileData;
 
     private String mFullName;
     private String mShortName;
 
-    public MethodInfo(long id, String className, String methodName, String signature, String srcPath,
-            int srcLineNumber) {
+    public MethodInfo(long id, String className, String methodName, String signature,
+            String srcPath, int srcLineNumber) {
         this.id = id;
         this.className = className;
         this.methodName = methodName;
@@ -67,27 +66,12 @@ public class MethodInfo {
         return cn;
     }
 
-    public long getExclusiveThreadTimes() {
-        return mExclusiveThreadTimes;
+    @NonNull
+    public MethodProfileData getProfileData() {
+        return mProfileData;
     }
 
-    public void addExclusiveThreadTimes(long time) {
-        mExclusiveThreadTimes += time;
-    }
-
-    public long getInclusiveThreadTimes() {
-        return mInclusiveThreadTimes;
-    }
-
-    public void addInclusiveThreadTimes(long time) {
-        mInclusiveThreadTimes += time;
-    }
-
-    public void setInclusiveThreadPercent(float percent) {
-        mInclusiveThreadPercent = percent;
-    }
-
-    public float getInclusiveThreadPercent() {
-        return mInclusiveThreadPercent;
+    public void setProfileData(@NonNull MethodProfileData profileData) {
+        mProfileData = profileData;
     }
 }

@@ -21,22 +21,30 @@ import static com.android.SdkConstants.ATTR_ID;
 import static com.android.SdkConstants.ATTR_LAYOUT_RESOURCE_PREFIX;
 import static com.android.SdkConstants.ATTR_NAME;
 import static com.android.SdkConstants.ATTR_TYPE;
+import static com.android.SdkConstants.FD_RES_VALUES;
 import static com.android.SdkConstants.ID_PREFIX;
 import static com.android.SdkConstants.NEW_ID_PREFIX;
 import static com.android.SdkConstants.RELATIVE_LAYOUT;
 import static com.android.SdkConstants.TAG_ITEM;
 import static com.android.SdkConstants.VALUE_ID;
+import static com.android.tools.lint.detector.api.LintUtils.editDistance;
+import static com.android.tools.lint.detector.api.LintUtils.getChildren;
+import static com.android.tools.lint.detector.api.LintUtils.isSameResourceFile;
 import static com.android.tools.lint.detector.api.LintUtils.stripIdPrefix;
 
 import com.android.annotations.NonNull;
+import com.android.annotations.Nullable;
+import com.android.ide.common.res2.AbstractResourceRepository;
+import com.android.ide.common.res2.ResourceFile;
+import com.android.ide.common.res2.ResourceItem;
 import com.android.resources.ResourceFolderType;
-import com.android.tools.lint.client.api.IDomParser;
+import com.android.resources.ResourceType;
+import com.android.tools.lint.client.api.LintClient;
 import com.android.tools.lint.detector.api.Category;
 import com.android.tools.lint.detector.api.Context;
 import com.android.tools.lint.detector.api.Implementation;
 import com.android.tools.lint.detector.api.Issue;
 import com.android.tools.lint.detector.api.LayoutDetector;
-import com.android.tools.lint.detector.api.LintUtils;
 import com.android.tools.lint.detector.api.Location;
 import com.android.tools.lint.detector.api.Location.Handle;
 import com.android.tools.lint.detector.api.Scope;
@@ -54,6 +62,7 @@ import org.w3c.dom.Element;
 import org.w3c.dom.NamedNodeMap;
 import org.w3c.dom.Node;
 
+import java.io.File;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
@@ -90,10 +99,10 @@ public class WrongIdDetector extends LayoutDetector {
     private List<Element> mRelativeLayouts;
 
     /** Reference to an unknown id */
+    @SuppressWarnings("unchecked")
     public static final Issue UNKNOWN_ID = Issue.create(
             "UnknownId", //$NON-NLS-1$
             "Reference to an unknown id",
-            "Checks for id references in RelativeLayouts that are not defined elsewhere",
             "The `@+id/` syntax refers to an existing id, or creates a new one if it has " +
             "not already been defined elsewhere. However, this means that if you have a " +
             "typo in your reference, or if the referred view no longer exists, you do not " +
@@ -105,25 +114,24 @@ public class WrongIdDetector extends LayoutDetector {
             Severity.FATAL,
             new Implementation(
                     WrongIdDetector.class,
-                    Scope.ALL_RESOURCES_SCOPE));
+                    Scope.ALL_RESOURCES_SCOPE,
+                    Scope.RESOURCE_FILE_SCOPE));
 
     /** Reference to an id that is not a sibling */
     public static final Issue NOT_SIBLING = Issue.create(
             "NotSibling", //$NON-NLS-1$
             "RelativeLayout Invalid Constraints",
-            "Checks for id references in RelativeLayouts that are not referencing a sibling",
             "Layout constraints in a given `RelativeLayout` should reference other views " +
             "within the same relative layout.",
             Category.CORRECTNESS,
             6,
-            Severity.ERROR,
+            Severity.FATAL,
             IMPLEMENTATION);
 
     /** An ID declaration which is not valid */
     public static final Issue INVALID = Issue.create(
             "InvalidId", //$NON-NLS-1$
             "Invalid ID declaration",
-            "Checks for invalid ID definitions",
             "An id definition *must* be of the form `@+id/yourname`. The tools have not " +
             "rejected strings of the form `@+foo/bar` in the past, but that was an error, " +
             "and could lead to tricky errors because of the way the id integers are assigned.\n" +
@@ -132,14 +140,13 @@ public class WrongIdDetector extends LayoutDetector {
             "instead, such as `login_button1` and `login_button2`.",
             Category.CORRECTNESS,
             6,
-            Severity.ERROR,
+            Severity.FATAL,
             IMPLEMENTATION);
 
     /** Reference to an id that is not in the current layout */
     public static final Issue UNKNOWN_ID_LAYOUT = Issue.create(
             "UnknownIdInLayout", //$NON-NLS-1$
             "Reference to an id that is not in the current layout",
-            "Makes sure that @+id references refer to views in the same layout",
 
             "The `@+id/` syntax refers to an existing id, or creates a new one if it has " +
             "not already been defined elsewhere. However, this means that if you have a " +
@@ -198,7 +205,7 @@ public class WrongIdDetector extends LayoutDetector {
             }
 
             for (Element layout : mRelativeLayouts) {
-                List<Element> children = LintUtils.getChildren(layout);
+                List<Element> children = getChildren(layout);
                 Set<String> ids = Sets.newHashSetWithExpectedSize(children.size());
                 for (Element child : children) {
                     String id = child.getAttributeNS(ANDROID_URI, ATTR_ID);
@@ -221,8 +228,7 @@ public class WrongIdDetector extends LayoutDetector {
                                 // since it's too early to conclude here that the id does
                                 // not exist (you are allowed to have forward references)
                                 XmlContext xmlContext = (XmlContext) context;
-                                IDomParser parser = xmlContext.parser;
-                                Handle handle = parser.createLocationHandle(xmlContext, attr);
+                                Handle handle = xmlContext.createLocationHandle(attr);
                                 handle.setClientData(attr);
 
                                 if (mHandles == null) {
@@ -247,10 +253,10 @@ public class WrongIdDetector extends LayoutDetector {
                                 if (context.isEnabled(NOT_SIBLING)) {
                                     XmlContext xmlContext = (XmlContext) context;
                                     String message = String.format(
-                                            "%1$s is not a sibling in the same RelativeLayout",
+                                            "`%1$s` is not a sibling in the same `RelativeLayout`",
                                             value);
                                     Location location = xmlContext.getLocation(attr);
-                                    xmlContext.report(NOT_SIBLING, attr, location, message, null);
+                                    xmlContext.report(NOT_SIBLING, attr, location, message);
                                 }
                             }
                         }
@@ -260,23 +266,46 @@ public class WrongIdDetector extends LayoutDetector {
         }
 
         mFileIds = null;
+
+        if (!context.getScope().contains(Scope.ALL_RESOURCE_FILES)) {
+            checkHandles(context);
+        }
     }
 
     @Override
     public void afterCheckProject(@NonNull Context context) {
+        if (context.getScope().contains(Scope.ALL_RESOURCE_FILES)) {
+            checkHandles(context);
+        }
+    }
+
+    private void checkHandles(@NonNull Context context) {
         if (mHandles != null) {
             boolean checkSameLayout = context.isEnabled(UNKNOWN_ID_LAYOUT);
             boolean checkExists = context.isEnabled(UNKNOWN_ID);
             boolean projectScope = context.getScope().contains(Scope.ALL_RESOURCE_FILES);
             for (Pair<String, Handle> pair : mHandles) {
                 String id = pair.getFirst();
-                boolean isBound = idDefined(mGlobalIds, id);
-                if (!isBound && checkExists && projectScope) {
+                boolean isBound = projectScope ? idDefined(mGlobalIds, id) :
+                        idDefined(context, id, context.file);
+                LintClient client = context.getClient();
+                if (!isBound && checkExists
+                        && (projectScope || client.supportsProjectResources())) {
                     Handle handle = pair.getSecond();
                     boolean isDeclared = idDefined(mDeclaredIds, id);
                     id = stripIdPrefix(id);
                     String suggestionMessage;
-                    List<String> suggestions = getSpellingSuggestions(id, mGlobalIds);
+                    Set<String> spellingDictionary = mGlobalIds;
+                    if (!projectScope && client.supportsProjectResources()) {
+                        AbstractResourceRepository resources =
+                                client.getProjectResources(context.getProject(), true);
+                        if (resources != null) {
+                            spellingDictionary = Sets.newHashSet(
+                                    resources.getItemsOfType(ResourceType.ID));
+                            spellingDictionary.remove(id);
+                        }
+                    }
+                    List<String> suggestions = getSpellingSuggestions(id, spellingDictionary);
                     if (suggestions.size() > 1) {
                         suggestionMessage = String.format(" Did you mean one of {%2$s} ?",
                                 id, Joiner.on(", ").join(suggestions));
@@ -289,11 +318,11 @@ public class WrongIdDetector extends LayoutDetector {
                     String message;
                     if (isDeclared) {
                         message = String.format(
-                                "The id \"%1$s\" is defined but not assigned to any views.%2$s",
+                                "The id \"`%1$s`\" is defined but not assigned to any views.%2$s",
                                 id, suggestionMessage);
                     } else {
                         message = String.format(
-                                "The id \"%1$s\" is not defined anywhere.%2$s",
+                                "The id \"`%1$s`\" is not defined anywhere.%2$s",
                                 id, suggestionMessage);
                     }
                     report(context, UNKNOWN_ID, handle, message);
@@ -305,7 +334,7 @@ public class WrongIdDetector extends LayoutDetector {
                     Handle handle = pair.getSecond();
                     report(context, UNKNOWN_ID_LAYOUT, handle,
                             String.format(
-                                    "The id \"%1$s\" is not referring to any views in this layout",
+                                    "The id \"`%1$s`\" is not referring to any views in this layout",
                                     stripIdPrefix(id)));
                 }
             }
@@ -316,12 +345,12 @@ public class WrongIdDetector extends LayoutDetector {
         Location location = handle.resolve();
         Object clientData = handle.getClientData();
         if (clientData instanceof Node) {
-            if (context.getDriver().isSuppressed(issue, (Node) clientData)) {
+            if (context.getDriver().isSuppressed(null, issue, (Node) clientData)) {
                 return;
             }
         }
 
-        context.report(issue, location, message, null);
+        context.report(issue, location, message);
     }
 
     @Override
@@ -353,12 +382,18 @@ public class WrongIdDetector extends LayoutDetector {
         mFileIds.add(id);
         mGlobalIds.add(id);
 
-        if (id.startsWith("@+") && !id.startsWith(NEW_ID_PREFIX) //$NON-NLS-1$
-                && !id.startsWith("@+android:id/")) {//$NON-NLS-1$
+        if (id.equals(NEW_ID_PREFIX) || id.equals(ID_PREFIX) || "@+id".equals(ID_PREFIX)) {
+            String message = "Invalid id: missing value";
+            context.report(INVALID, attribute, context.getLocation(attribute), message);
+        } else if (id.startsWith("@+") && !id.startsWith(NEW_ID_PREFIX) //$NON-NLS-1$
+                && !id.startsWith("@+android:id/")  //$NON-NLS-1$
+                || id.startsWith(NEW_ID_PREFIX)
+                && id.indexOf('/', NEW_ID_PREFIX.length()) != -1) {
+            int nameStart = id.startsWith(NEW_ID_PREFIX) ? NEW_ID_PREFIX.length() : 2;
+            String suggested = NEW_ID_PREFIX + id.substring(nameStart).replace('/', '_');
             String message = String.format(
-                    "ID definitions *must* be of the form @+id/name; try using %1$s",
-                    NEW_ID_PREFIX + id.substring(2).replace('/', '_'));
-            context.report(INVALID, attribute, context.getLocation(attribute), message, null);
+                    "ID definitions *must* be of the form `@+id/name`; try using `%1$s`", suggested);
+            context.report(INVALID, attribute, context.getLocation(attribute), message);
         }
     }
 
@@ -380,6 +415,41 @@ public class WrongIdDetector extends LayoutDetector {
         return definedLocally;
     }
 
+    private boolean idDefined(@NonNull Context context, @NonNull String id,
+            @Nullable File notIn) {
+        AbstractResourceRepository resources =
+                context.getClient().getProjectResources(context.getProject(), true);
+        if (resources != null) {
+            List<ResourceItem> items = resources.getResourceItem(ResourceType.ID,
+                    stripIdPrefix(id));
+            if (items == null || items.isEmpty()) {
+                return false;
+            }
+            for (ResourceItem item : items) {
+                ResourceFile source = item.getSource();
+                if (source != null) {
+                    File file = source.getFile();
+                    if (file.getParentFile().getName().startsWith(FD_RES_VALUES)) {
+                        if (mDeclaredIds == null) {
+                            mDeclaredIds = Sets.newHashSet();
+                        }
+                        mDeclaredIds.add(id);
+                        continue;
+                    }
+
+                    // Ignore definitions in the given file. This is used to ignore
+                    // matches in the same file as the reference, since the reference
+                    // is often expressed as a definition
+                    if (!isSameResourceFile(file, notIn)) {
+                        return true;
+                    }
+                }
+            }
+        }
+
+        return false;
+    }
+
     private static List<String> getSpellingSuggestions(String id, Collection<String> ids) {
         int maxDistance = id.length() >= 4 ? 2 : 1;
 
@@ -395,7 +465,7 @@ public class WrongIdDetector extends LayoutDetector {
                     // O(n*m) storage and O(n*m) speed, where n and m are the string lengths)
                     continue;
                 }
-                int distance = LintUtils.editDistance(id, matchWith);
+                int distance = editDistance(id, matchWith);
                 if (distance <= maxDistance) {
                     matches.put(distance, matchWith);
                 }

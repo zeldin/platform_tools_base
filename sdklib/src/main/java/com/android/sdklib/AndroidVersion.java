@@ -47,6 +47,9 @@ public final class AndroidVersion implements Comparable<AndroidVersion> {
     private final int mApiLevel;
     private final String mCodename;
 
+    /** The default AndroidVersion for minSdkVersion and targetSdkVersion if not specified */
+    public static final AndroidVersion DEFAULT = new AndroidVersion(1, null);
+
     /**
      * Thrown when an {@link AndroidVersion} object could not be created.
      * @see AndroidVersion#AndroidVersion(Properties)
@@ -63,7 +66,7 @@ public final class AndroidVersion implements Comparable<AndroidVersion> {
      * Creates an {@link AndroidVersion} with the given api level and codename.
      * Codename should be null for a release version, otherwise it's a preview codename.
      */
-    public AndroidVersion(int apiLevel, String codename) {
+    public AndroidVersion(int apiLevel, @Nullable String codename) {
         mApiLevel = apiLevel;
         mCodename = sanitizeCodename(codename);
     }
@@ -74,7 +77,9 @@ public final class AndroidVersion implements Comparable<AndroidVersion> {
      * <p/>The {@link Properties} is expected to have been filled with
      * {@link #saveProperties(Properties)}.
      */
-    public AndroidVersion(Properties properties, int defaultApiLevel, String defaultCodeName) {
+    public AndroidVersion(@Nullable Properties properties,
+                                    int        defaultApiLevel,
+                          @Nullable String     defaultCodeName) {
         if (properties == null) {
             mApiLevel = defaultApiLevel;
             mCodename = sanitizeCodename(defaultCodeName);
@@ -93,7 +98,7 @@ public final class AndroidVersion implements Comparable<AndroidVersion> {
      *
      * @see #saveProperties(Properties)
      */
-    public AndroidVersion(Properties properties) throws AndroidVersionException {
+    public AndroidVersion(@NonNull Properties properties) throws AndroidVersionException {
         Exception error = null;
 
         String apiLevel = properties.getProperty(PkgProps.VERSION_API_LEVEL, null/*defaultValue*/);
@@ -153,7 +158,7 @@ public final class AndroidVersion implements Comparable<AndroidVersion> {
         }
     }
 
-    public void saveProperties(Properties props) {
+    public void saveProperties(@NonNull Properties props) {
         props.setProperty(PkgProps.VERSION_API_LEVEL, Integer.toString(mApiLevel));
         if (mCodename != null) {
             props.setProperty(PkgProps.VERSION_CODENAME, mCodename);
@@ -174,10 +179,26 @@ public final class AndroidVersion implements Comparable<AndroidVersion> {
     }
 
     /**
+     * Returns the API level as an integer. If this is a preview platform, it
+     * will return the expected final version of the API rather than the current API
+     * level. This is the "feature level" as opposed to the "release level" returned by
+     * {@link #getApiLevel()} in the sense that it is useful when you want
+     * to check the presence of a given feature from an API, and we consider the feature
+     * present in preview platforms as well.
+     *
+     * @return the API level of this version, +1 for preview platforms
+     */
+    public int getFeatureLevel() {
+        //noinspection VariableNotUsedInsideIf
+        return mCodename != null ? mApiLevel + 1 : mApiLevel;
+    }
+
+    /**
      * Returns the version code name if applicable, null otherwise.
      * <p/>If the codename is non null, then the API level should be ignored, and this should be
      * used as a unique identifier of the target instead.
      */
+    @Nullable
     public String getCodename() {
         return mCodename;
     }
@@ -185,6 +206,7 @@ public final class AndroidVersion implements Comparable<AndroidVersion> {
     /**
      * Returns a string representing the API level and/or the code name.
      */
+    @NonNull
     public String getApiString() {
         if (mCodename != null) {
             return mCodename;
@@ -212,7 +234,7 @@ public final class AndroidVersion implements Comparable<AndroidVersion> {
      * access to the list of optional libraries), this method can give a good indication of whether
      * there is a chance the application could run, or if there's a direct incompatibility.
      */
-    public boolean canRun(AndroidVersion appVersion) {
+    public boolean canRun(@NonNull AndroidVersion appVersion) {
         // if the application is compiled for a preview version, the device must be running exactly
         // the same.
         if (appVersion.mCodename != null) {
@@ -307,11 +329,11 @@ public final class AndroidVersion implements Comparable<AndroidVersion> {
      *         less than, equal to, or greater than the specified object.
      */
     @Override
-    public int compareTo(AndroidVersion o) {
+    public int compareTo(@NonNull AndroidVersion o) {
         return compareTo(o.mApiLevel, o.mCodename);
     }
 
-    public int compareTo(int apiLevel, String codename) {
+    public int compareTo(int apiLevel, @Nullable String codename) {
         if (mCodename == null) {
             if (codename == null) {
                 return mApiLevel - apiLevel;
@@ -358,10 +380,10 @@ public final class AndroidVersion implements Comparable<AndroidVersion> {
      * @return Null for a release version or a non-empty codename.
      */
     @Nullable
-    private String sanitizeCodename(@Nullable String codename) {
+    private static String sanitizeCodename(@Nullable String codename) {
         if (codename != null) {
             codename = codename.trim();
-            if (codename.length() == 0 || SdkConstants.CODENAME_RELEASE.equals(codename)) {
+            if (codename.isEmpty() || SdkConstants.CODENAME_RELEASE.equals(codename)) {
                 codename = null;
             }
         }

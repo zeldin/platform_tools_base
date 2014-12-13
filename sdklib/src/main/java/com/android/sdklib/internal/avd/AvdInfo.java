@@ -17,9 +17,15 @@
 package com.android.sdklib.internal.avd;
 
 import com.android.SdkConstants;
+import com.android.annotations.NonNull;
+import com.android.annotations.Nullable;
 import com.android.prefs.AndroidLocation.AndroidLocationException;
 import com.android.sdklib.IAndroidTarget;
+import com.android.sdklib.ISystemImage;
+import com.android.sdklib.SystemImage;
+import com.android.sdklib.devices.Abi;
 import com.android.sdklib.devices.Device;
+import com.android.sdklib.repository.descriptors.IdDisplay;
 
 import java.io.File;
 import java.util.Collections;
@@ -63,6 +69,7 @@ public final class AvdInfo implements Comparable<AvdInfo> {
     /** An immutable map of properties. This must not be modified. Map can be empty. Never null. */
     private final Map<String, String> mProperties;
     private final AvdStatus mStatus;
+    private final IdDisplay mTag;
 
     /**
      * Creates a new valid AVD info. Values are immutable.
@@ -75,17 +82,21 @@ public final class AvdInfo implements Comparable<AvdInfo> {
      * @param folderPath The path to the data directory
      * @param targetHash the target hash
      * @param target The target. Can be null, if the target was not resolved.
+     * @param tag The tag id/display.
      * @param abiType Name of the abi.
      * @param properties The property map. If null, an empty map will be created.
      */
-    public AvdInfo(String name,
-            File iniFile,
-            String folderPath,
-            String targetHash,
-            IAndroidTarget target,
-            String abiType,
-            Map<String, String> properties) {
-         this(name, iniFile, folderPath, targetHash, target, abiType, properties, AvdStatus.OK);
+    public AvdInfo(@NonNull  String name,
+                   @NonNull  File iniFile,
+                   @NonNull  String folderPath,
+                   @NonNull  String targetHash,
+                   @Nullable IAndroidTarget target,
+                   @NonNull  IdDisplay tag,
+                   @NonNull  String abiType,
+                   @Nullable Map<String, String> properties) {
+         this(name, iniFile, folderPath,
+              targetHash, target, tag, abiType,
+              properties, AvdStatus.OK);
     }
 
     /**
@@ -99,44 +110,57 @@ public final class AvdInfo implements Comparable<AvdInfo> {
      * @param folderPath The path to the data directory
      * @param targetHash the target hash
      * @param target The target. Can be null, if the target was not resolved.
+     * @param tag The tag id/display.
      * @param abiType Name of the abi.
      * @param properties The property map. If null, an empty map will be created.
      * @param status The {@link AvdStatus} of this AVD. Cannot be null.
      */
-    public AvdInfo(String name,
-            File iniFile,
-            String folderPath,
-            String targetHash,
-            IAndroidTarget target,
-            String abiType,
-            Map<String, String> properties,
-            AvdStatus status) {
-        mName = name;
-        mIniFile = iniFile;
+    public AvdInfo(@NonNull  String name,
+                   @NonNull  File iniFile,
+                   @NonNull  String folderPath,
+                   @NonNull  String targetHash,
+                   @Nullable IAndroidTarget target,
+                   @NonNull  IdDisplay tag,
+                   @NonNull  String abiType,
+                   @Nullable Map<String, String> properties,
+                   @NonNull AvdStatus status) {
+        mName       = name;
+        mIniFile    = iniFile;
         mFolderPath = folderPath;
         mTargetHash = targetHash;
-        mTarget = target;
-        mAbiType = abiType;
+        mTarget     = target;
+        mTag        = tag;
+        mAbiType    = abiType;
         mProperties = properties == null ? Collections.<String, String>emptyMap()
                                          : Collections.unmodifiableMap(properties);
-        mStatus = status;
+        mStatus     = status;
     }
 
     /** Returns the name of the AVD. */
+    @NonNull
     public String getName() {
         return mName;
     }
 
     /** Returns the path of the AVD data directory. */
+    @NonNull
     public String getDataFolderPath() {
         return mFolderPath;
     }
 
+    /** Returns the tag id/display of the AVD. */
+    @NonNull
+    public IdDisplay getTag() {
+        return mTag;
+    }
+
     /** Returns the processor type of the AVD. */
+    @NonNull
     public String getAbiType() {
         return mAbiType;
     }
 
+    @NonNull
     public String getCpuArch() {
         String cpuArch = mProperties.get(AvdManager.AVD_INI_CPU_ARCH);
         if (cpuArch != null) {
@@ -147,58 +171,69 @@ public final class AvdInfo implements Comparable<AvdInfo> {
         return SdkConstants.CPU_ARCH_ARM;
     }
 
+    @NonNull
     public String getDeviceManufacturer() {
         String deviceManufacturer = mProperties.get(AvdManager.AVD_INI_DEVICE_MANUFACTURER);
         if (deviceManufacturer != null && !deviceManufacturer.isEmpty()) {
             return deviceManufacturer;
         }
 
-        return "";
+        return "";                                                              // $NON-NLS-1$
     }
 
+    @NonNull
     public String getDeviceName() {
         String deviceName = mProperties.get(AvdManager.AVD_INI_DEVICE_NAME);
         if (deviceName != null && !deviceName.isEmpty()) {
             return deviceName;
         }
 
-        return "";
+        return "";                                                              // $NON-NLS-1$
     }
 
     /** Convenience function to return a more user friendly name of the abi type. */
-    public static String getPrettyAbiType(String raw) {
-        String s = null;
-        if (raw.equalsIgnoreCase(SdkConstants.ABI_ARMEABI)) {
-            s = "ARM (" + SdkConstants.ABI_ARMEABI + ")";
+    @NonNull
+    public static String getPrettyAbiType(@NonNull AvdInfo avdInfo) {
+        return getPrettyAbiType(avdInfo.getTag(), avdInfo.getAbiType());
+    }
 
-        } else if (raw.equalsIgnoreCase(SdkConstants.ABI_ARMEABI_V7A)) {
-            s = "ARM (" + SdkConstants.ABI_ARMEABI_V7A + ")";
+    /** Convenience function to return a more user friendly name of the abi type. */
+    @NonNull
+    public static String getPrettyAbiType(@NonNull ISystemImage sysImg) {
+        return getPrettyAbiType(sysImg.getTag(), sysImg.getAbiType());
+    }
 
-        } else if (raw.equalsIgnoreCase(SdkConstants.ABI_INTEL_ATOM)) {
-            s = "Intel Atom (" + SdkConstants.ABI_INTEL_ATOM + ")";
+    /** Convenience function to return a more user friendly name of the abi type. */
+    @NonNull
+    public static String getPrettyAbiType(@NonNull IdDisplay tag, @NonNull String rawAbi) {
+        String s = "";                                                          // $NON-NLS-1$
 
-        } else if (raw.equalsIgnoreCase(SdkConstants.ABI_MIPS)) {
-            s = "MIPS (" + SdkConstants.ABI_MIPS + ")";
-
-        } else {
-            s = raw + " (" + raw + ")";
+        if (!SystemImage.DEFAULT_TAG.equals(tag)) {
+            s = tag.getDisplay() + ' ';
         }
+
+        Abi abi = Abi.getEnum(rawAbi);
+        s += (abi == null ? rawAbi : abi.getDisplayName()) + " (" + rawAbi + ')';
+
         return s;
     }
 
     /**
      * Returns the target hash string.
      */
+    @NonNull
     public String getTargetHash() {
         return mTargetHash;
     }
 
     /** Returns the target of the AVD, or <code>null</code> if it has not been resolved. */
+    @Nullable
     public IAndroidTarget getTarget() {
         return mTarget;
     }
 
     /** Returns the {@link AvdStatus} of the receiver. */
+    @NonNull
     public AvdStatus getStatus() {
         return mStatus;
     }
@@ -218,12 +253,31 @@ public final class AvdInfo implements Comparable<AvdInfo> {
      *
      * @param manager The AVD Manager, used to get the AVD storage path.
      * @param avdName The name of the desired AVD.
+     * @param unique Whether to return the default or a unique variation of the default.
      * @throws AndroidLocationException if there's a problem getting android root directory.
      */
-    public static File getDefaultAvdFolder(AvdManager manager, String avdName)
+    @NonNull
+    public static File getDefaultAvdFolder(@NonNull AvdManager manager, @NonNull String avdName,
+            boolean unique)
             throws AndroidLocationException {
-        return new File(manager.getBaseAvdFolder(),
-                        avdName + AvdManager.AVD_FOLDER_EXTENSION);
+        String base = manager.getBaseAvdFolder();
+        File result = new File(base, avdName + AvdManager.AVD_FOLDER_EXTENSION);
+        if (unique) {
+            int suffix = 0;
+            while (result.exists()) {
+                result = new File(base, String.format("%s_%d%s", avdName, (++suffix),
+                        AvdManager.AVD_FOLDER_EXTENSION));
+            }
+        }
+        return result;
+    }
+
+    /** Compatibility forwarding until the usages in tools/swt are updated */
+    @Deprecated
+    @NonNull
+    public static File getDefaultAvdFolder(@NonNull AvdManager manager, @NonNull String avdName)
+            throws AndroidLocationException{
+        return getDefaultAvdFolder(manager, avdName, false);
     }
 
     /**
@@ -235,7 +289,8 @@ public final class AvdInfo implements Comparable<AvdInfo> {
      * @param avdName The name of the desired AVD.
      * @throws AndroidLocationException if there's a problem getting android root directory.
      */
-    public static File getDefaultIniFile(AvdManager manager, String avdName)
+    @NonNull
+    public static File getDefaultIniFile(@NonNull AvdManager manager, @NonNull String avdName)
             throws AndroidLocationException {
         String avdRoot = manager.getBaseAvdFolder();
         return new File(avdRoot, avdName + AvdManager.INI_EXTENSION);
@@ -244,6 +299,7 @@ public final class AvdInfo implements Comparable<AvdInfo> {
     /**
      * Returns the .ini {@link File} for this AVD.
      */
+    @NonNull
     public File getIniFile() {
         return mIniFile;
     }
@@ -251,13 +307,15 @@ public final class AvdInfo implements Comparable<AvdInfo> {
     /**
      * Helper method that returns the Config {@link File} for a given AVD name.
      */
-    public static File getConfigFile(String path) {
+    @NonNull
+    public static File getConfigFile(@NonNull String path) {
         return new File(path, AvdManager.CONFIG_INI);
     }
 
     /**
      * Returns the Config {@link File} for this AVD.
      */
+    @NonNull
     public File getConfigFile() {
         return getConfigFile(mFolderPath);
     }
@@ -267,6 +325,7 @@ public final class AvdInfo implements Comparable<AvdInfo> {
      * This can be empty but not null.
      * Callers must NOT try to modify this immutable map.
      */
+    @NonNull
     public Map<String, String> getProperties() {
         return mProperties;
     }
@@ -275,6 +334,7 @@ public final class AvdInfo implements Comparable<AvdInfo> {
      * Returns the error message for the AVD or <code>null</code> if {@link #getStatus()}
      * returns {@link AvdStatus#OK}
      */
+    @Nullable
     public String getErrorMessage() {
         switch (mStatus) {
             case ERROR_PATH:
@@ -291,7 +351,10 @@ public final class AvdInfo implements Comparable<AvdInfo> {
                         getConfigFile());
             case ERROR_IMAGE_DIR:
                 return String.format(
-                        "Invalid value in image.sysdir. Run 'android update avd -n %1$s'",
+                        "Missing system image for %1$s%2$s %3$s. Run 'android update avd -n %4$s'",
+                        SystemImage.DEFAULT_TAG.equals(mTag) ? "" : (mTag.getDisplay() + " "),
+                        mAbiType,
+                        mTarget.getFullName(),
                         mName);
             case ERROR_DEVICE_CHANGED:
                 return String.format("%1$s %2$s configuration has changed since AVD creation",
@@ -313,8 +376,9 @@ public final class AvdInfo implements Comparable<AvdInfo> {
      * Returns whether an emulator is currently running the AVD.
      */
     public boolean isRunning() {
+        // this is a file on Unix, and a directory on Windows.
         File f = new File(mFolderPath, "userdata-qemu.img.lock");   //$NON-NLS-1$
-        return f.isFile();
+        return f.exists();
     }
 
     /**

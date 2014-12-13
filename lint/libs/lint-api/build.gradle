@@ -1,10 +1,16 @@
+apply plugin: 'java'
+apply plugin: 'sdk-java-lib'
+
+
 group = 'com.android.tools.lint'
 archivesBaseName = 'lint-api'
+version = rootProject.ext.baseVersion
 
 dependencies {
-    compile project(':sdk-common')
+    compile project(':base:sdk-common')
+    compile project(':base:builder-model')
 
-    compile 'com.android.tools.external.lombok:lombok-ast:0.2.1'
+    compile 'com.android.tools.external.lombok:lombok-ast:0.2.2'
     compile 'org.ow2.asm:asm:4.0'
     compile 'org.ow2.asm:asm-tree:4.0'
 }
@@ -14,49 +20,9 @@ sourceSets {
     test.resources.srcDir 'src/test/java'
 }
 
-jar {
-    from 'NOTICE'
-}
+project.ext.pomName = 'Android Tools Lint API'
+project.ext.pomDesc = 'API to build lint checks'
 
-uploadArchives {
-    repositories {
-        mavenDeployer {
-            beforeDeployment { MavenDeployment deployment ->
-                if (!project.has("release")) {
-                    throw new StopExecutionException("uploadArchives must be called with the release.gradle init script")
-                }
+apply from: "$rootDir/buildSrc/base/publish.gradle"
+apply from: "$rootDir/buildSrc/base/javadoc.gradle"
 
-                signing.signPom(deployment)
-            }
-
-            repository(url: "https://oss.sonatype.org/service/local/staging/deploy/maven2/") {
-                authentication(userName: project.ext.sonatypeUsername, password: project.ext.sonatypePassword)
-            }
-
-            pom.project {
-                name 'Android Tools Lint API'
-                description 'API to build lint checks'
-                url 'http://tools.android.com'
-                inceptionYear '2007'
-
-                licenses {
-                    license {
-                        name 'The Apache Software License, Version 2.0'
-                        url 'http://www.apache.org/licenses/LICENSE-2.0.txt'
-                        distribution 'repo'
-                    }
-                }
-
-                scm {
-                    url "https://android.googlesource.com/platform/tools/base"
-                    connection "git://android.googlesource.com/platform/tools/base.git"
-                }
-                developers {
-                    developer {
-                        name 'The Android Open Source Project'
-                    }
-                }
-            }
-        }
-    }
-}

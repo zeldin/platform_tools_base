@@ -49,7 +49,6 @@ public class HardcodedValuesDetector extends LayoutDetector {
     public static final Issue ISSUE = Issue.create(
             "HardcodedText", //$NON-NLS-1$
             "Hardcoded text",
-            "Looks for hardcoded text attributes which should be converted to resource lookup",
 
             "Hardcoding text attributes directly in layout files is bad for several reasons:\n" +
             "\n" +
@@ -59,8 +58,8 @@ public class HardcodedValuesDetector extends LayoutDetector {
             "* The application cannot be translated to other languages by just adding new " +
             "translations for existing string resources.\n" +
             "\n" +
-            "In Eclipse there is a quickfix to automatically extract this hardcoded string into " +
-            "a resource lookup.",
+            "In Android Studio and Eclipse there are quickfixes to automatically extract this " +
+            "hardcoded string into a resource lookup.",
 
             Category.I18N,
             5,
@@ -111,8 +110,8 @@ public class HardcodedValuesDetector extends LayoutDetector {
             }
 
             context.report(ISSUE, attribute, context.getLocation(attribute),
-                    String.format("[I18N] Hardcoded string \"%1$s\", should use @string resource",
-                            value), null);
+                String.format("[I18N] Hardcoded string \"%1$s\", should use `@string` resource",
+                              value));
         }
     }
 }

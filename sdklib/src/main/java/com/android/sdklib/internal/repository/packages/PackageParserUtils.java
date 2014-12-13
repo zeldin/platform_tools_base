@@ -16,16 +16,76 @@
 
 package com.android.sdklib.internal.repository.packages;
 
+import com.android.annotations.NonNull;
+import com.android.annotations.Nullable;
+import com.android.sdklib.internal.repository.archives.ArchFilter;
+import com.android.sdklib.internal.repository.archives.BitSize;
+import com.android.sdklib.internal.repository.archives.HostOs;
+import com.android.sdklib.internal.repository.archives.LegacyArch;
+import com.android.sdklib.internal.repository.archives.LegacyOs;
 import com.android.sdklib.repository.FullRevision;
 import com.android.sdklib.repository.NoPreviewRevision;
+import com.android.sdklib.repository.MajorRevision;
+import com.android.sdklib.repository.PkgProps;
 import com.android.sdklib.repository.SdkRepoConstants;
 
 import org.w3c.dom.Node;
 
+import java.util.Properties;
+
 /**
- * Misc utilities to help extracting elements and attributes out of an XML document.
+ * Misc utilities to help extracting elements and attributes out of a repository XML document.
  */
 public class PackageParserUtils {
+
+    /**
+     * Parse the {@link ArchFilter} of an &lt;archive&gt; element..
+     * <p/>
+     * Starting with repo schema 10, add-on schema 7 and sys-img schema 3, this is done using
+     * specific optional elements contained within the &lt;archive&gt; element.
+     * <p/>
+     * If none of the new element are defined, for backward compatibility we try to find
+     * the previous style XML attributes "os" and "arch" in the &lt;archive&gt; element.
+     *
+     * @param archiveNode
+     * @return A new {@link ArchFilter}
+     */
+    @NonNull
+    public static ArchFilter parseArchFilter(@NonNull Node archiveNode) {
+        String hos = PackageParserUtils.getOptionalXmlString(archiveNode, SdkRepoConstants.NODE_HOST_OS);
+        String hb  = PackageParserUtils.getOptionalXmlString(archiveNode, SdkRepoConstants.NODE_HOST_BITS);
+        String jb  = PackageParserUtils.getOptionalXmlString(archiveNode, SdkRepoConstants.NODE_JVM_BITS);
+        String mjv = PackageParserUtils.getOptionalXmlString(archiveNode, SdkRepoConstants.NODE_MIN_JVM_VERSION);
+
+        if (hos != null || hb != null || jb != null || mjv != null) {
+            NoPreviewRevision rev = null;
+            try {
+                rev = NoPreviewRevision.parseRevision(mjv);
+            } catch (NumberFormatException ignore) {}
+
+            return new ArchFilter(
+                    HostOs.fromXmlName(hos),
+                    BitSize.fromXmlName(hb),
+                    BitSize.fromXmlName(jb),
+                    rev);
+        }
+
+        Properties props = new Properties();
+
+        LegacyOs o = (LegacyOs) PackageParserUtils.getEnumAttribute(
+                archiveNode, SdkRepoConstants.LEGACY_ATTR_OS, LegacyOs.values(), null);
+        if (o != null) {
+            props.setProperty(ArchFilter.LEGACY_PROP_OS, o.toString());
+        }
+
+        LegacyArch a = (LegacyArch) PackageParserUtils.getEnumAttribute(
+                archiveNode, SdkRepoConstants.LEGACY_ATTR_ARCH, LegacyArch.values(), null);
+        if (a != null) {
+            props.setProperty(ArchFilter.LEGACY_PROP_ARCH, a.toString());
+        }
+
+        return new ArchFilter(props);
+    }
 
     /**
      * Parses a full revision element such as <revision> or <min-tools-rev>.
@@ -111,17 +171,20 @@ public class PackageParserUtils {
     }
 
     /**
-     * Returns the first child element with the given XML local name.
+     * Returns the first child element with the given XML local name and the same NS URI.
      * If xmlLocalName is null, returns the very first child element.
      */
     public static Node findChildElement(Node node, String xmlLocalName) {
         if (node != null) {
             String nsUri = node.getNamespaceURI();
             for(Node child = node.getFirstChild(); child != null; child = child.getNextSibling()) {
-                if (child.getNodeType() == Node.ELEMENT_NODE &&
-                        nsUri.equals(child.getNamespaceURI())) {
-                    if (xmlLocalName == null || xmlLocalName.equals(child.getLocalName())) {
-                        return child;
+                if (child.getNodeType() == Node.ELEMENT_NODE) {
+                    String nsUriChild = child.getNamespaceURI();
+                    if ((nsUri == null && nsUriChild == null) ||
+                            (nsUri != null && nsUri.equals(nsUriChild))) {
+                        if (xmlLocalName == null || xmlLocalName.equals(child.getLocalName())) {
+                            return child;
+                        }
                     }
                 }
             }
@@ -143,9 +206,26 @@ public class PackageParserUtils {
      *         is missing or empty, so you can't tell the difference.
      */
     public static String getXmlString(Node node, String xmlLocalName) {
-        Node child = findChildElement(node, xmlLocalName);
+        return getXmlString(node, xmlLocalName, "");                    //$NON-NLS-1$
+    }
 
-        return child == null ? "" : child.getTextContent();  //$NON-NLS-1$
+    /**
+     * Retrieves the value of that XML element as a string.
+     * Returns the defaultValue if the element is missing or empty.
+     * <p/>
+     * Note: use {@link #getOptionalXmlString(Node, String)} if you need to know when the
+     * element is missing versus empty.
+     *
+     * @param node The XML <em>parent</em> node to parse.
+     * @param xmlLocalName The XML local name to find in the parent node.
+     * @param defaultValue A default value to return if the element is missing.
+     * @return The text content of the element
+     *         or the defaultValue if the element is missing or empty.
+     */
+    public static String getXmlString(Node node, String xmlLocalName, String defaultValue) {
+        Node child = findChildElement(node, xmlLocalName);
+        String content = child == null ? null : child.getTextContent();
+        return content == null || content.isEmpty() ? defaultValue : content;
     }
 
     /**
@@ -163,7 +243,6 @@ public class PackageParserUtils {
      */
     public static String getOptionalXmlString(Node node, String xmlLocalName) {
         Node child = findChildElement(node, xmlLocalName);
-
         return child == null ? null : child.getTextContent();  //$NON-NLS-1$
     }
 
@@ -217,6 +296,127 @@ public class PackageParserUtils {
         }
 
         return defaultValue;
+    }
+
+    /**
+     * Utility method that returns a property from a {@link Properties} object.
+     * Returns the default value if props is null or if the property is not defined.
+     *
+     * @param props The {@link Properties} to search into.
+     *   If null, the default value is returned.
+     * @param propKey The name of the property. Must not be null.
+     * @param defaultValue The default value to return if {@code props} is null or if the
+     *   key is not found. Can be null.
+     * @return The string value of the given key in the properties, or null if the key
+     *   isn't found or if {@code props} is null.
+     */
+    @Nullable
+    public static String getProperty(
+            @Nullable Properties props,
+            @NonNull String propKey,
+            @Nullable String defaultValue) {
+        if (props == null) {
+            return defaultValue;
+        }
+        return props.getProperty(propKey, defaultValue);
+    }
+
+    /**
+     * Utility method that returns an integer property from a {@link Properties} object.
+     * Returns the default value if props is null or if the property is not defined or
+     * cannot be parsed to an integer.
+     *
+     * @param props The {@link Properties} to search into.
+     *   If null, the default value is returned.
+     * @param propKey The name of the property. Must not be null.
+     * @param defaultValue The default value to return if {@code props} is null or if the
+     *   key is not found. Can be null.
+     * @return The integer value of the given key in the properties, or the {@code defaultValue}.
+     */
+    public static int getPropertyInt(
+            @Nullable Properties props,
+            @NonNull String propKey,
+            int defaultValue) {
+        String s = props != null ? props.getProperty(propKey, null) : null;
+        if (s != null) {
+            try {
+                return Integer.parseInt(s);
+            } catch (Exception ignore) {}
+        }
+        return defaultValue;
+    }
+
+    /**
+     * Utility method to parse the {@link PkgProps#PKG_REVISION} property as a full
+     * revision (major.minor.micro.preview).
+     *
+     * @param props The properties to parse.
+     * @return A {@link FullRevision} or null if there is no such property or it couldn't be parsed.
+     * @param propKey The name of the property. Must not be null.
+     */
+    @Nullable
+    public static FullRevision getPropertyFull(
+            @Nullable Properties props,
+            @NonNull String propKey) {
+        String revStr = getProperty(props, propKey, null);
+
+        FullRevision rev = null;
+        if (revStr != null) {
+            try {
+                rev = FullRevision.parseRevision(revStr);
+            } catch (NumberFormatException ignore) {}
+        }
+
+        return rev;
+    }
+
+    /**
+     * Utility method to parse the {@link PkgProps#PKG_REVISION} property as a major
+     * revision (major integer, no minor/micro/preview parts.)
+     *
+     * @param props The properties to parse.
+     * @return A {@link MajorRevision} or null if there is no such property or it couldn't be parsed.
+     * @param propKey The name of the property. Must not be null.
+     */
+    @Nullable
+    public static MajorRevision getPropertyMajor(
+            @Nullable Properties props,
+            @NonNull String propKey) {
+        String revStr = getProperty(props, propKey, null);
+
+        MajorRevision rev = null;
+        if (revStr != null) {
+            try {
+                rev = MajorRevision.parseRevision(revStr);
+            } catch (NumberFormatException ignore) {}
+        }
+
+        return rev;
+    }
+
+    /**
+     * Utility method to parse the {@link PkgProps#PKG_REVISION} property as a no-preview
+     * revision (major.minor.micro integers but no preview part.)
+     *
+     * @param props The properties to parse.
+     * @return A {@link NoPreviewRevision} or
+     *         null if there is no such property or it couldn't be parsed.
+     * @param propKey The name of the property. Must not be null.
+     */
+    @Nullable
+    public static NoPreviewRevision getPropertyNoPreview(
+            @Nullable Properties props,
+            @NonNull String propKey) {
+        String revStr = getProperty(props, propKey, null);
+
+        NoPreviewRevision rev = null;
+        if (revStr != null) {
+            try {
+                rev = NoPreviewRevision.parseRevision(revStr);
+            } catch (NumberFormatException ignore) {}
+        }
+
+        return rev;
     }
 
 }

@@ -1,11 +1,14 @@
 <?xml version="1.0"?>
 <template
     format="3"
-    revision="3"
+    revision="4"
     name="Blank Activity"
-    description="Creates a new blank activity, with an action bar and optional navigational elements such as tabs or horizontal swipe.">
+    minApi="7"
+    minBuildApi="14"
+    description="Creates a new blank activity with an action bar.">
 
-    <category value="Activities" />
+    <category value="Activity" />
+    <formfactor value="Mobile" />
 
     <parameter
         id="activityClass"
@@ -35,6 +38,15 @@
         help="The name of the activity. For launcher activities, the application title." />
 
     <parameter
+        id="menuName"
+        name="Menu Resource Name"
+        type="string"
+        constraints="layout|unique|nonempty"
+        suggest="menu_${classToResource(activityClass)}"
+        default="menu_main"
+        help="The name of the resource file to create for the menu items" />
+
+    <parameter
         id="isLauncher"
         name="Launcher Activity"
         type="boolean"
@@ -50,19 +62,6 @@
         help="The hierarchical parent activity, used to provide a default implementation for the 'Up' button" />
 
     <parameter
-        id="navType"
-        name="Navigation Type"
-        type="enum"
-        default="none"
-        help="The type of navigation to use for the activity" >
-        <option id="none" default="true">None</option>
-        <!--<option id="tabs" minApi="11">Fixed Tabs</option>-->
-        <option id="tabs_pager" minApi="11">Fixed Tabs + Swipe</option>
-        <option id="pager_strip" minApi="11">Scrollable Tabs + Swipe</option>
-        <option id="dropdown" minApi="11">Dropdown</option>
-    </parameter>
-
-    <parameter
         id="packageName"
         name="Package name"
         type="string"
@@ -73,12 +72,6 @@
     <thumbs>
         <!-- default thumbnail is required -->
         <thumb>template_blank_activity.png</thumb>
-        <!-- attributes act as selectors based on chosen parameters -->
-        <thumb navType="none">template_blank_activity.png</thumb>
-        <thumb navType="tabs">template_blank_activity_tabs.png</thumb>
-        <thumb navType="tabs_pager">template_blank_activity_tabs_pager.png</thumb>
-        <thumb navType="pager_strip">template_blank_activity_pager.png</thumb>
-        <thumb navType="dropdown">template_blank_activity_dropdown.png</thumb>
     </thumbs>
 
     <globals file="globals.xml.ftl" />

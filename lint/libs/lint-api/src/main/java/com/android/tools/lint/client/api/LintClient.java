@@ -16,8 +16,6 @@
 
 package com.android.tools.lint.client.api;
 
-import static com.android.SdkConstants.ANDROID_MANIFEST_XML;
-import static com.android.SdkConstants.BIN_FOLDER;
 import static com.android.SdkConstants.CLASS_FOLDER;
 import static com.android.SdkConstants.DOT_AAR;
 import static com.android.SdkConstants.DOT_JAR;
@@ -27,12 +25,15 @@ import static com.android.SdkConstants.RES_FOLDER;
 import static com.android.SdkConstants.SRC_FOLDER;
 import static com.android.tools.lint.detector.api.LintUtils.endsWith;
 
+import com.android.SdkConstants;
 import com.android.annotations.NonNull;
 import com.android.annotations.Nullable;
-import com.android.ide.common.sdk.SdkVersionInfo;
+import com.android.ide.common.res2.AbstractResourceRepository;
+import com.android.ide.common.res2.ResourceItem;
 import com.android.prefs.AndroidLocation;
 import com.android.sdklib.IAndroidTarget;
-import com.android.sdklib.SdkManager;
+import com.android.sdklib.SdkVersionInfo;
+import com.android.sdklib.repository.local.LocalSdk;
 import com.android.tools.lint.detector.api.Context;
 import com.android.tools.lint.detector.api.Detector;
 import com.android.tools.lint.detector.api.Issue;
@@ -40,9 +41,10 @@ import com.android.tools.lint.detector.api.LintUtils;
 import com.android.tools.lint.detector.api.Location;
 import com.android.tools.lint.detector.api.Project;
 import com.android.tools.lint.detector.api.Severity;
-import com.android.utils.StdLogger;
-import com.android.utils.StdLogger.Level;
+import com.android.tools.lint.detector.api.TextFormat;
+import com.android.utils.XmlUtils;
 import com.google.common.annotations.Beta;
+import com.google.common.collect.Lists;
 import com.google.common.collect.Maps;
 import com.google.common.collect.Sets;
 import com.google.common.io.Files;
@@ -50,21 +52,18 @@ import com.google.common.io.Files;
 import org.w3c.dom.Document;
 import org.w3c.dom.Element;
 import org.w3c.dom.NodeList;
-import org.xml.sax.InputSource;
 
 import java.io.File;
 import java.io.IOException;
-import java.io.StringReader;
+import java.net.HttpURLConnection;
 import java.net.URL;
+import java.net.URLConnection;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-
-import javax.xml.parsers.DocumentBuilder;
-import javax.xml.parsers.DocumentBuilderFactory;
 
 /**
  * Information about the tool embedding the lint analyzer. IDEs and other tools
@@ -96,20 +95,14 @@ public abstract class LintClient {
      * Report the given issue. This method will only be called if the configuration
      * provided by {@link #getConfiguration(Project)} has reported the corresponding
      * issue as enabled and has not filtered out the issue with its
-     * {@link Configuration#ignore(Context, Issue, Location, String, Object)} method.
+     * {@link Configuration#ignore(Context,Issue,Location,String)} method.
      * <p>
-     *
      * @param context the context used by the detector when the issue was found
      * @param issue the issue that was found
      * @param severity the severity of the issue
      * @param location the location of the issue
      * @param message the associated user message
-     * @param data optional extra data for a discovered issue, or null. The
-     *            content depends on the specific issue. Detectors can pass
-     *            extra info here which automatic fix tools etc can use to
-     *            extract relevant information instead of relying on parsing the
-     *            error message text. See each detector for details on which
-     *            data if any is supplied for a given issue.
+     * @param format the format of the description and location descriptions
      */
     public abstract void report(
             @NonNull Context context,
@@ -117,7 +110,7 @@ public abstract class LintClient {
             @NonNull Severity severity,
             @Nullable Location location,
             @NonNull String message,
-            @Nullable Object data);
+            @NonNull TextFormat format);
 
     /**
      * Send an exception or error message (with warning severity) to the log
@@ -150,22 +143,26 @@ public abstract class LintClient {
             @Nullable Object... args);
 
     /**
-     * Returns a {@link IDomParser} to use to parse XML
+     * Returns a {@link XmlParser} to use to parse XML
      *
-     * @return a new {@link IDomParser}, or null if this client does not support
+     * @return a new {@link XmlParser}, or null if this client does not support
      *         XML analysis
      */
     @Nullable
-    public abstract IDomParser getDomParser();
+    public abstract XmlParser getXmlParser();
 
     /**
-     * Returns a {@link IJavaParser} to use to parse Java
+     * Returns a {@link JavaParser} to use to parse Java
      *
-     * @return a new {@link IJavaParser}, or null if this client does not
+     * @param project the project to parse, if known (this can be used to look up
+     *                the class path for type attribution etc, and it can also be used
+     *                to more efficiently process a set of files, for example to
+     *                perform type attribution for multiple units in a single pass)
+     * @return a new {@link JavaParser}, or null if this client does not
      *         support Java analysis
      */
     @Nullable
-    public abstract IJavaParser getJavaParser();
+    public abstract JavaParser getJavaParser(@Nullable Project project);
 
     /**
      * Returns an optimal detector, if applicable. By default, just returns the
@@ -381,7 +378,19 @@ public abstract class LintClient {
         // This is not an accurate test; specific LintClient implementations (e.g.
         // IDEs or a gradle-integration of lint) have more context and can perform a more accurate
         // check
-        return new File(project.getDir(), "build.gradle").exists();
+        if (new File(project.getDir(), SdkConstants.FN_BUILD_GRADLE).exists()) {
+            return true;
+        }
+
+        File parent = project.getDir().getParentFile();
+        if (parent != null && parent.getName().equals(SdkConstants.FD_SOURCES)) {
+            File root = parent.getParentFile();
+            if (root != null && new File(root, SdkConstants.FN_BUILD_GRADLE).exists()) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**
@@ -448,13 +457,8 @@ public abstract class LintClient {
             File classpathFile = new File(projectDir, ".classpath"); //$NON-NLS-1$
             if (classpathFile.exists()) {
                 String classpathXml = readFile(classpathFile);
-                DocumentBuilderFactory factory = DocumentBuilderFactory.newInstance();
-                InputSource is = new InputSource(new StringReader(classpathXml));
-                factory.setNamespaceAware(false);
-                factory.setValidating(false);
                 try {
-                    DocumentBuilder builder = factory.newDocumentBuilder();
-                    Document document = builder.parse(is);
+                    Document document = XmlUtils.parseDocument(classpathXml, false);
                     NodeList tags = document.getElementsByTagName("classpathentry"); //$NON-NLS-1$
                     for (int i = 0, n = tags.getLength(); i < n; i++) {
                         Element element = (Element) tags.item(i);
@@ -653,7 +657,7 @@ public abstract class LintClient {
         return project.getDir().getName();
     }
 
-    private IAndroidTarget[] mTargets;
+    protected IAndroidTarget[] mTargets;
 
     /**
      * Returns all the {@link IAndroidTarget} versions installed in the user's SDK install
@@ -664,15 +668,9 @@ public abstract class LintClient {
     @NonNull
     public IAndroidTarget[] getTargets() {
         if (mTargets == null) {
-            File sdkHome = getSdkHome();
-            if (sdkHome != null) {
-                StdLogger log = new StdLogger(Level.WARNING);
-                SdkManager manager = SdkManager.createManager(sdkHome.getPath(), log);
-                if (manager != null) {
-                    mTargets = manager.getTargets();
-                } else {
-                    mTargets = new IAndroidTarget[0];
-                }
+            LocalSdk localSdk = getSdk();
+            if (localSdk != null) {
+                mTargets = localSdk.getTargets();
             } else {
                 mTargets = new IAndroidTarget[0];
             }
@@ -681,13 +679,53 @@ public abstract class LintClient {
         return mTargets;
     }
 
+    protected LocalSdk mSdk;
+
+    /**
+     * Returns the SDK installation (used to look up platforms etc)
+     *
+     * @return the SDK if known
+     */
+    @Nullable
+    public LocalSdk getSdk() {
+         if (mSdk == null) {
+             File sdkHome = getSdkHome();
+             if (sdkHome != null) {
+                 mSdk = new LocalSdk(sdkHome);
+             }
+         }
+
+        return mSdk;
+    }
+
+    /**
+     * Returns the compile target to use for the given project
+     *
+     * @param project the project in question
+     *
+     * @return the compile target to use to build the given project
+     */
+    @Nullable
+    public IAndroidTarget getCompileTarget(@NonNull Project project) {
+        int buildSdk = project.getBuildSdk();
+        IAndroidTarget[] targets = getTargets();
+        for (int i = targets.length - 1; i >= 0; i--) {
+            IAndroidTarget target = targets[i];
+            if (target.isPlatform() && target.getVersion().getApiLevel() == buildSdk) {
+                return target;
+            }
+        }
+
+        return null;
+    }
+
     /**
      * Returns the highest known API level.
      *
      * @return the highest known API level
      */
     public int getHighestKnownApiLevel() {
-        int max = SdkVersionInfo.HIGHEST_KNOWN_API;
+        int max = SdkVersionInfo.HIGHEST_KNOWN_STABLE_API;
 
         for (IAndroidTarget target : getTargets()) {
             if (target.isPlatform()) {
@@ -820,6 +858,28 @@ public abstract class LintClient {
     }
 
     /**
+     * Opens a URL connection.
+     *
+     * Clients such as IDEs can override this to for example consider the user's IDE proxy
+     * settings.
+     *
+     * @param url the URL to read
+     * @return a {@link java.net.URLConnection} or null
+     * @throws IOException if any kind of IO exception occurs
+     */
+    @Nullable
+    public URLConnection openConnection(@NonNull URL url) throws IOException {
+        return url.openConnection();
+    }
+
+    /** Closes a connection previously returned by {@link #openConnection(java.net.URL)} */
+    public void closeConnection(@NonNull URLConnection connection) throws IOException {
+        if (connection instanceof HttpURLConnection) {
+            ((HttpURLConnection)connection).disconnect();
+        }
+    }
+
+    /**
      * Returns true if the given directory is a lint project directory.
      * By default, a project directory is the directory containing a manifest file,
      * but in Gradle projects for example it's the root gradle directory.
@@ -830,5 +890,76 @@ public abstract class LintClient {
     @SuppressWarnings("MethodMayBeStatic") // Intentionally instance method so it can be overridden
     public boolean isProjectDirectory(@NonNull File dir) {
         return LintUtils.isManifestFolder(dir) || Project.isAospFrameworksProject(dir);
+    }
+
+    /**
+     * Returns whether lint should look for suppress comments. Tools that already do
+     * this on their own can return false here to avoid doing unnecessary work.
+     */
+    public boolean checkForSuppressComments() {
+        return true;
+    }
+
+    /**
+     * Adds in any custom lint rules and returns the result as a new issue registry,
+     * or the same one if no custom rules were found
+     *
+     * @param registry the main registry to add rules to
+     * @return a new registry containing the passed in rules plus any custom rules,
+     *   or the original registry if no custom rules were found
+     */
+    public IssueRegistry addCustomLintRules(@NonNull IssueRegistry registry) {
+        List<File> jarFiles = findGlobalRuleJars();
+
+        if (!jarFiles.isEmpty()) {
+            List<IssueRegistry> registries = Lists.newArrayListWithExpectedSize(jarFiles.size());
+            registries.add(registry);
+            for (File jarFile : jarFiles) {
+                try {
+                    registries.add(JarFileIssueRegistry.get(this, jarFile));
+                } catch (Throwable e) {
+                    log(e, "Could not load custom rule jar file %1$s", jarFile);
+                }
+            }
+            if (registries.size() > 1) { // the first item is the passed in registry itself
+                return new CompositeIssueRegistry(registries);
+            }
+        }
+
+        return registry;
+    }
+
+    /**
+     * Returns true if this client supports project resource repository lookup via
+     * {@link #getProjectResources(Project,boolean)}
+     *
+     * @return true if the client can provide project resources
+     */
+    public boolean supportsProjectResources() {
+        return false;
+    }
+
+    /**
+     * Returns the project resources, if available
+     *
+     * @param includeDependencies if true, include merged view of all dependencies
+     * @return the project resources, or null if not available
+     */
+    @Nullable
+    public AbstractResourceRepository getProjectResources(Project project,
+            boolean includeDependencies) {
+        return null;
+    }
+
+    /**
+     * For a lint client which supports resource items (via {@link #supportsProjectResources()})
+     * return a handle for a resource item
+     *
+     * @param item the resource item to look up a location handle for
+     * @return a corresponding handle
+     */
+    @NonNull
+    public Location.Handle createResourceItemHandle(@NonNull ResourceItem item) {
+        return new Location.ResourceItemHandle(item);
     }
 }

@@ -18,9 +18,10 @@ package com.android.tools.lint;
 
 import com.android.tools.lint.detector.api.Project;
 import com.android.tools.lint.detector.api.Severity;
+import com.android.utils.SdkUtils;
 import com.google.common.collect.Lists;
 import com.google.common.collect.Sets;
-import com.google.common.io.Closeables;
+import com.google.common.io.Closer;
 
 import java.io.File;
 import java.io.IOException;
@@ -130,19 +131,30 @@ public class MultiProjectHtmlReporter extends HtmlReporter {
                     relative));
         }
 
+        Closer closer = Closer.create();
         // Write overview index?
-        writeOverview(errorCount, warningCount, projects);
-        Closeables.closeQuietly(mWriter);
+        try {
+            closer.register(mWriter);
+            writeOverview(errorCount, warningCount, projects);
+        } catch (Throwable e) {
+            throw closer.rethrow(e);
+        } finally {
+            closer.close();
+        }
 
-        File index = new File(mDir, INDEX_NAME);
-        System.out.println();
-        System.out.println(String.format("Wrote overview index to %1$s", index));
+        if (!mClient.getFlags().isQuiet()
+                && (mDisplayEmpty || errorCount > 0 || warningCount > 0)) {
+            File index = new File(mDir, INDEX_NAME);
+            String url = SdkUtils.fileToUrlString(index.getAbsoluteFile());
+            System.out.println(String.format("Wrote overview index to %1$s", url));
+        }
     }
 
     private void writeOverview(int errorCount, int warningCount, List<ProjectEntry> projects)
             throws IOException {
         mWriter.write(
-                "<html>\n" +                                             //$NON-NLS-1$
+                "<!DOCTYPE html PUBLIC \"-//W3C//DTD XHTML 1.0 Transitional//EN\" \"http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd\">\n" + //$NON-NLS-1$
+                "<html xmlns=\"http://www.w3.org/1999/xhtml\">\n" +      //$NON-NLS-1$
                 "<head>\n" +                                             //$NON-NLS-1$
                 "<title>" + mTitle + "</title>\n");                      //$NON-NLS-1$//$NON-NLS-2$
         writeStyleSheet();
@@ -151,8 +163,8 @@ public class MultiProjectHtmlReporter extends HtmlReporter {
                 "<body>\n" +                                             //$NON-NLS-1$
                 "<h1>" +                                                 //$NON-NLS-1$
                 mTitle +
-                "<div class=\"titleSeparator\"></div>\n" +               //$NON-NLS-1$
-                "</h1>");                                                //$NON-NLS-1$
+                "</h1>\n" +                                              //$NON-NLS-1$
+                "<div class=\"titleSeparator\"></div>\n");               //$NON-NLS-1$
 
 
         // Sort project list in decreasing order of errors, warnings and names
@@ -160,11 +172,11 @@ public class MultiProjectHtmlReporter extends HtmlReporter {
 
         mWriter.write(String.format("Check performed at %1$s.",
                 new Date().toString()));
-        mWriter.write("<br/>");                                          //$NON-NLS-1$
+        mWriter.write("<br/>\n");                                        //$NON-NLS-1$
         mWriter.write(String.format("%1$d errors and %2$d warnings found:\n",
                 errorCount, warningCount));
 
-        mWriter.write("<br/><br/>");                                     //$NON-NLS-1$
+        mWriter.write("<br/><br/>\n");                                   //$NON-NLS-1$
 
         if (errorCount == 0 && warningCount == 0) {
             mWriter.write("Congratulations!");
@@ -186,7 +198,7 @@ public class MultiProjectHtmlReporter extends HtmlReporter {
         if (errorUrl != null) {
             mWriter.write("<img border=\"0\" align=\"top\" src=\"");      //$NON-NLS-1$
             mWriter.write(errorUrl);
-            mWriter.write("\" />\n");                          //$NON-NLS-1$
+            mWriter.write("\" alt=\"Error\" />\n");                          //$NON-NLS-1$
         }
         mWriter.write("Errors");
         mWriter.write("</th><th class=\"countColumn\">");                   //$NON-NLS-1$
@@ -194,7 +206,7 @@ public class MultiProjectHtmlReporter extends HtmlReporter {
         if (warningUrl != null) {
             mWriter.write("<img border=\"0\" align=\"top\" src=\"");      //$NON-NLS-1$
             mWriter.write(warningUrl);
-            mWriter.write("\" />\n");                          //$NON-NLS-1$
+            mWriter.write("\" alt=\"Warning\" />\n");                          //$NON-NLS-1$
         }
         mWriter.write("Warnings");
         mWriter.write("</th></tr>\n");                                   //$NON-NLS-1$
@@ -202,7 +214,7 @@ public class MultiProjectHtmlReporter extends HtmlReporter {
         for (ProjectEntry entry : projects) {
             mWriter.write("<tr><td>");                                   //$NON-NLS-1$
             mWriter.write("<a href=\"");
-            mWriter.write(entry.fileName); // TODO: Escape?
+            appendEscapedText(entry.fileName);
             mWriter.write("\">");                                        //$NON-NLS-1$
             mWriter.write(entry.path);
             mWriter.write("</a></td><td class=\"countColumn\">");        //$NON-NLS-1$
@@ -212,6 +224,8 @@ public class MultiProjectHtmlReporter extends HtmlReporter {
             mWriter.write("</td></tr>\n");                               //$NON-NLS-1$
         }
         mWriter.write("</table>\n");                                     //$NON-NLS-1$
+
+        mWriter.write("</body>\n</html>\n");                             //$NON-NLS-1$
     }
 
     private static class ProjectEntry implements Comparable<ProjectEntry> {

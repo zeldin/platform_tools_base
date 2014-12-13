@@ -19,13 +19,18 @@ package com.android.tools.lint.checks;
 import static com.android.tools.lint.checks.MissingClassDetector.INNERCLASS;
 import static com.android.tools.lint.checks.MissingClassDetector.INSTANTIATABLE;
 import static com.android.tools.lint.checks.MissingClassDetector.MISSING;
+import static com.android.tools.lint.detector.api.TextFormat.TEXT;
 
 import com.android.annotations.NonNull;
+import com.android.annotations.Nullable;
 import com.android.tools.lint.client.api.LintClient;
+import com.android.tools.lint.detector.api.Context;
 import com.android.tools.lint.detector.api.Detector;
 import com.android.tools.lint.detector.api.Issue;
+import com.android.tools.lint.detector.api.Location;
 import com.android.tools.lint.detector.api.Project;
 import com.android.tools.lint.detector.api.Scope;
+import com.android.tools.lint.detector.api.Severity;
 import com.google.common.collect.Sets;
 
 import java.io.File;
@@ -179,14 +184,51 @@ public class MissingClassDetectorTest extends AbstractCheckTest {
            checkLint(Arrays.asList(master, library)));
     }
 
+    public void testIndirectLibraryProjects() throws Exception {
+        mScopes = null;
+        mEnabled = Sets.newHashSet(MISSING, INSTANTIATABLE, INNERCLASS);
+        File master = getProjectDir("MasterProject",
+                // Master project
+                "bytecode/AndroidManifestRegs.xml=>AndroidManifest.xml",
+                "multiproject/main.properties=>project.properties",
+                "bytecode/TestService.java.txt=>src/test/pkg/TestService.java",
+                "bytecode/TestService.class.data=>bin/classes/test/pkg/TestService.class",
+                "bytecode/.classpath=>.classpath"
+        );
+        File library2 = getProjectDir("LibraryProject",
+                // Library project
+                "multiproject/library-manifest2.xml=>AndroidManifest.xml",
+                "multiproject/library2.properties=>project.properties"
+        );
+        File library = getProjectDir("RealLibrary",
+                // Library project
+                "multiproject/library-manifest.xml=>AndroidManifest.xml",
+                "multiproject/library.properties=>project.properties",
+                "bytecode/OnClickActivity.java.txt=>src/test/pkg/OnClickActivity.java",
+                "bytecode/OnClickActivity.class.data=>bin/classes/test/pkg/OnClickActivity.class",
+                "bytecode/TestProvider.java.txt=>src/test/pkg/TestProvider.java",
+                "bytecode/TestProvider.class.data=>bin/classes/test/pkg/TestProvider.class",
+                "bytecode/TestProvider2.java.txt=>src/test/pkg/TestProvider2.java",
+                "bytecode/TestProvider2.class.data=>bin/classes/test/pkg/TestProvider2.class"
+                // Missing TestReceiver: Test should complain about just that class
+        );
+        assertEquals(""
+                + "MasterProject/AndroidManifest.xml:32: Error: Class referenced in the manifest, test.pkg.TestReceiver, was not found in the project or the libraries [MissingRegistered]\n"
+                + "        <receiver android:name=\"TestReceiver\" />\n"
+                + "        ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n"
+                + "1 errors, 0 warnings\n",
+
+                checkLint(Arrays.asList(master, library2, library)));
+    }
+
     public void testInnerClassStatic() throws Exception {
         mScopes = null;
         mEnabled = Sets.newHashSet(MISSING, INSTANTIATABLE, INNERCLASS);
         assertEquals(
-            "src/test/pkg/Foo.java:8: Warning: This inner class should be static (test.pkg.Foo.Baz) [Instantiatable]\n" +
+            "src/test/pkg/Foo.java:8: Error: This inner class should be static (test.pkg.Foo.Baz) [Instantiatable]\n" +
             "    public class Baz extends Activity {\n" +
             "    ^\n" +
-            "0 errors, 1 warnings\n",
+            "1 errors, 0 warnings\n",
 
             lintProject(
                 "registration/AndroidManifest.xml=>AndroidManifest.xml",
@@ -202,10 +244,10 @@ public class MissingClassDetectorTest extends AbstractCheckTest {
         mScopes = null;
         mEnabled = Sets.newHashSet(MISSING, INSTANTIATABLE, INNERCLASS);
         assertEquals(
-            "src/test/pkg/Foo/Bar.java:6: Warning: The default constructor must be public [Instantiatable]\n" +
+            "src/test/pkg/Foo/Bar.java:6: Error: The default constructor must be public [Instantiatable]\n" +
             "    private Bar() {\n" +
             "    ^\n" +
-            "0 errors, 1 warnings\n",
+            "1 errors, 0 warnings\n",
 
             lintProject(
                 "registration/AndroidManifestInner.xml=>AndroidManifest.xml",
@@ -276,7 +318,7 @@ public class MissingClassDetectorTest extends AbstractCheckTest {
             "AndroidManifest.xml:14: Error: Class referenced in the manifest, test.pkg.Foo.Bar, was not found in the project or the libraries [MissingRegistered]\n" +
             "        <activity\n" +
             "        ^\n" +
-            "AndroidManifest.xml:15: Warning: Use '$' instead of '.' for inner classes (or use only lowercase letters in package names) [InnerclassSeparator]\n" +
+            "AndroidManifest.xml:15: Warning: Use '$' instead of '.' for inner classes (or use only lowercase letters in package names); replace \".Foo.Bar\" with \".Foo$Bar\" [InnerclassSeparator]\n" +
             "            android:name=\".Foo.Bar\"\n" +
             "            ~~~~~~~~~~~~~~~~~~~~~~~\n" +
             "1 errors, 1 warnings\n",
@@ -315,10 +357,10 @@ public class MissingClassDetectorTest extends AbstractCheckTest {
             + "res/layout/fragment2.xml:17: Error: Class referenced in the layout file, my.app.Fragment2, was not found in the project or the libraries [MissingRegistered]\n"
             + "    <fragment\n"
             + "    ^\n"
-            + "src/test/pkg/Foo/Bar.java:6: Warning: The default constructor must be public [Instantiatable]\n"
+            + "src/test/pkg/Foo/Bar.java:6: Error: The default constructor must be public [Instantiatable]\n"
             + "    private Bar() {\n"
             + "    ^\n"
-            + "3 errors, 1 warnings\n",
+            + "4 errors, 0 warnings\n",
 
         lintProject(
             "bytecode/AndroidManifestRegs.xml=>AndroidManifest.xml",
@@ -379,6 +421,47 @@ public class MissingClassDetectorTest extends AbstractCheckTest {
                 ));
     }
 
+    public void testCustomViewInCapitalizedPackage() throws Exception {
+        mScopes = null;
+        mEnabled = Sets.newHashSet(MISSING, INSTANTIATABLE, INNERCLASS);
+        assertEquals(""
+                + "No warnings.",
+
+                lintProject(
+                        "bytecode/.classpath=>.classpath",
+                        "res/layout/customview3.xml",
+                        "bytecode/CustomView3.java.txt=>src/test/bytecode/CustomView3.java",
+                        "bytecode/CustomView3.class.data=>bin/classes/test/bytecode/CustomView3.class"
+                ));
+    }
+
+    public void testCustomViewNotReferenced() throws Exception {
+        mScopes = null;
+        mEnabled = Sets.newHashSet(MISSING, INSTANTIATABLE, INNERCLASS);
+        assertEquals(""
+                + "No warnings.",
+
+                lintProject(
+                        "bytecode/.classpath=>.classpath",
+                        "bytecode/CustomView3.java.txt=>src/test/bytecode/CustomView3.java",
+                        "bytecode/CustomView3.class.data=>bin/classes/test/bytecode/CustomView3.class"
+                ));
+    }
+
+
+    public void testMissingClass() throws Exception {
+        mScopes = null;
+        mEnabled = Sets.newHashSet(MISSING, INSTANTIATABLE, INNERCLASS);
+        assertEquals(""
+                + "No warnings.",
+
+                lintProject(
+                        "bytecode/.classpath=>.classpath",
+                        "bytecode/user_prefs_fragment.xml=>res/layout/user_prefs_fragment.xml",
+                        "bytecode/ViewAndUpdatePreferencesActivity$UserPreferenceFragment.class.data=>bin/classes/course/examples/DataManagement/PreferenceActivity/ViewAndUpdatePreferencesActivity$UserPreferenceFragment.class"
+                ));
+    }
+
     public void testFragments() throws Exception {
         mScopes = Scope.MANIFEST_SCOPE;
         mEnabled = Sets.newHashSet(MISSING, INSTANTIATABLE, INNERCLASS);
@@ -420,5 +503,27 @@ public class MissingClassDetectorTest extends AbstractCheckTest {
                         "bytecode/FragmentTest.java.txt=>src/test/pkg/FragmentTest.java",
                         "bytecode/.classpath=>.classpath",
                         "res/xml/prefs_headers.xml"));
+    }
+
+
+    public void testGetOldValue() {
+        assertEquals(".Foo.Bar", MissingClassDetector.getOldValue(INNERCLASS,
+                "Use '$' instead of '.' for inner classes (or use only lowercase letters in package names); replace \".Foo.Bar\" with \".Foo$Bar\" [InnerclassSeparator]",
+                TEXT));
+    }
+
+    public void testGetNewValue() {
+        assertEquals(".Foo$Bar", MissingClassDetector.getNewValue(INNERCLASS,
+                "Use '$' instead of '.' for inner classes (or use only lowercase letters in package names); replace \".Foo.Bar\" with \".Foo$Bar\" [InnerclassSeparator]",
+                TEXT));
+    }
+
+    @Override
+    protected void checkReportedError(@NonNull Context context, @NonNull Issue issue,
+            @NonNull Severity severity, @Nullable Location location, @NonNull String message) {
+        if (issue == INNERCLASS) {
+            assertNotNull(message, MissingClassDetector.getOldValue(issue, message, TEXT));
+            assertNotNull(message, MissingClassDetector.getNewValue(issue, message, TEXT));
+        }
     }
 }

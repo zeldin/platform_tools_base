@@ -16,7 +16,16 @@
 
 package com.android.tools.lint.checks;
 
+import static com.android.tools.lint.detector.api.TextFormat.RAW;
+import static com.android.tools.lint.detector.api.TextFormat.TEXT;
+
+import com.android.annotations.NonNull;
+import com.android.annotations.Nullable;
+import com.android.tools.lint.detector.api.Context;
 import com.android.tools.lint.detector.api.Detector;
+import com.android.tools.lint.detector.api.Issue;
+import com.android.tools.lint.detector.api.Location;
+import com.android.tools.lint.detector.api.Severity;
 
 @SuppressWarnings("javadoc")
 public class WrongCaseDetectorTest extends AbstractCheckTest {
@@ -27,20 +36,41 @@ public class WrongCaseDetectorTest extends AbstractCheckTest {
 
     public void test() throws Exception {
         assertEquals(""
-                + "res/layout/case.xml:18: Warning: Invalid tag <Merge>; should be <merge> [WrongCase]\n"
+                + "res/layout/case.xml:18: Error: Invalid tag <Merge>; should be <merge> [WrongCase]\n"
                 + "<Merge xmlns:android=\"http://schemas.android.com/apk/res/android\" >\n"
                 + "^\n"
-                + "res/layout/case.xml:20: Warning: Invalid tag <Fragment>; should be <fragment> [WrongCase]\n"
+                + "res/layout/case.xml:20: Error: Invalid tag <Fragment>; should be <fragment> [WrongCase]\n"
                 + "    <Fragment android:name=\"foo.bar.Fragment\" />\n"
                 + "    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n"
-                + "res/layout/case.xml:21: Warning: Invalid tag <Include>; should be <include> [WrongCase]\n"
+                + "res/layout/case.xml:21: Error: Invalid tag <Include>; should be <include> [WrongCase]\n"
                 + "    <Include layout=\"@layout/foo\" />\n"
                 + "    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n"
-                + "res/layout/case.xml:22: Warning: Invalid tag <RequestFocus>; should be <requestFocus> [WrongCase]\n"
+                + "res/layout/case.xml:22: Error: Invalid tag <RequestFocus>; should be <requestFocus> [WrongCase]\n"
                 + "    <RequestFocus />\n"
                 + "    ~~~~~~~~~~~~~~~~\n"
-                + "0 errors, 4 warnings\n",
+                + "4 errors, 0 warnings\n",
 
                 lintProject("res/layout/case.xml"));
+    }
+
+    public void testGetOldValue() {
+        assertEquals("Merge", WrongCaseDetector.getOldValue(
+                "Invalid tag `<Merge>`; should be `<merge>`", RAW));
+        assertEquals("Merge", WrongCaseDetector.getOldValue(
+                "Invalid tag <Merge>; should be <merge>", TEXT));
+    }
+
+    public void testGetNewValue() {
+        assertEquals("merge", WrongCaseDetector.getNewValue(
+                "Invalid tag <Merge>; should be <merge>", TEXT));
+        assertEquals("merge", WrongCaseDetector.getNewValue(
+                "Invalid tag `<Merge>`; should be `<merge>`", RAW));
+    }
+
+    @Override
+    protected void checkReportedError(@NonNull Context context, @NonNull Issue issue,
+            @NonNull Severity severity, @Nullable Location location, @NonNull String message) {
+        assertNotNull(message, WrongCaseDetector.getOldValue(message, TEXT));
+        assertNotNull(message, WrongCaseDetector.getNewValue(message, TEXT));
     }
 }

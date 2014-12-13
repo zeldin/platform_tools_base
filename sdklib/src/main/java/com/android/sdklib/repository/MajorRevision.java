@@ -28,6 +28,10 @@ import com.android.annotations.NonNull;
  */
 public class MajorRevision extends FullRevision {
 
+    public MajorRevision(FullRevision fullRevision) {
+        super(fullRevision.getMajor(), IMPLICIT_MINOR_REV, IMPLICIT_MICRO_REV);
+    }
+
     public MajorRevision(int major) {
         super(major, IMPLICIT_MINOR_REV, IMPLICIT_MICRO_REV);
     }
@@ -48,7 +52,8 @@ public class MajorRevision extends FullRevision {
     public static MajorRevision parseRevision(@NonNull String revision)
             throws NumberFormatException {
         FullRevision r = parseRevisionImpl(
-                                revision, false /*supportMinorMicro*/, false /*supportPreview*/);
+                                revision, false /*supportMinorMicro*/, false /*supportPreview*/,
+                                false /*keepPrecision*/);
         return new MajorRevision(r.getMajor());
     }
 }

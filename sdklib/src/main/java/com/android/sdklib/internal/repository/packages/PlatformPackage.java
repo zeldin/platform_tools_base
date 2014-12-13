@@ -18,6 +18,7 @@ package com.android.sdklib.internal.repository.packages;
 
 import com.android.SdkConstants;
 import com.android.annotations.NonNull;
+import com.android.annotations.Nullable;
 import com.android.annotations.VisibleForTesting;
 import com.android.annotations.VisibleForTesting.Visibility;
 import com.android.sdklib.AndroidTargetHash;
@@ -25,11 +26,12 @@ import com.android.sdklib.AndroidVersion;
 import com.android.sdklib.IAndroidTarget;
 import com.android.sdklib.SdkManager;
 import com.android.sdklib.internal.repository.IDescription;
-import com.android.sdklib.internal.repository.archives.Archive.Arch;
-import com.android.sdklib.internal.repository.archives.Archive.Os;
 import com.android.sdklib.internal.repository.sources.SdkSource;
+import com.android.sdklib.repository.MajorRevision;
 import com.android.sdklib.repository.PkgProps;
 import com.android.sdklib.repository.SdkRepoConstants;
+import com.android.sdklib.repository.descriptors.IPkgDesc;
+import com.android.sdklib.repository.descriptors.PkgDesc;
 import com.android.utils.Pair;
 
 import org.w3c.dom.Node;
@@ -55,6 +57,8 @@ public class PlatformPackage extends MinToolsPackage
 
     /** The helper handling the layoutlib version. */
     private final LayoutlibVersionMixin mLayoutlibVersion;
+
+    private final IPkgDesc mPkgDesc;
 
     /**
      * Creates a new platform package from the attributes and elements of the given XML node.
@@ -89,6 +93,13 @@ public class PlatformPackage extends MinToolsPackage
                                         SdkRepoConstants.NODE_ABI_INCLUDED);
 
         mLayoutlibVersion = new LayoutlibVersionMixin(packageNode);
+
+        mPkgDesc = PkgDesc.Builder
+                .newPlatform(mVersion,
+                             (MajorRevision) getRevision(),
+                             getMinToolsRevision())
+                .setDescriptions(this)
+                .create();
     }
 
     /**
@@ -99,25 +110,25 @@ public class PlatformPackage extends MinToolsPackage
      * <p/>
      * By design, this creates a package with one and only one archive.
      */
-    public static Package create(IAndroidTarget target, Properties props) {
+    public static Package create(@NonNull IAndroidTarget target, @Nullable Properties props) {
         return new PlatformPackage(target, props);
     }
 
     @VisibleForTesting(visibility=Visibility.PRIVATE)
-    protected PlatformPackage(IAndroidTarget target, Properties props) {
+    protected PlatformPackage(@NonNull IAndroidTarget target, @Nullable Properties props) {
         this(null /*source*/, target, props);
     }
 
     @VisibleForTesting(visibility=Visibility.PRIVATE)
-    protected PlatformPackage(SdkSource source, IAndroidTarget target, Properties props) {
+    protected PlatformPackage(@Nullable SdkSource source,
+                              @NonNull IAndroidTarget target,
+                              @Nullable Properties props) {
         super(  source,                     //source
                 props,                      //properties
                 target.getRevision(),       //revision
                 null,                       //license
                 target.getDescription(),    //description
                 null,                       //descUrl
-                Os.getCurrentOs(),          //archiveOs
-                Arch.getCurrentArch(),      //archiveArch
                 target.getLocation()        //archiveOsPath
                 );
 
@@ -125,6 +136,19 @@ public class PlatformPackage extends MinToolsPackage
         mVersionName  = target.getVersionName();
         mLayoutlibVersion = new LayoutlibVersionMixin(props);
         mIncludedAbi = props == null ? null : props.getProperty(PkgProps.PLATFORM_INCLUDED_ABI);
+
+        mPkgDesc = PkgDesc.Builder
+                .newPlatform(mVersion,
+                             (MajorRevision) getRevision(),
+                             getMinToolsRevision())
+                .setDescriptions(this)
+                .create();
+    }
+
+    @Override
+    @NonNull
+    public IPkgDesc getPkgDesc() {
+        return mPkgDesc;
     }
 
     /**
@@ -204,8 +228,12 @@ public class PlatformPackage extends MinToolsPackage
      */
     @Override
     public String getListDescription() {
-        String s;
+        String ld = getListDisplay();
+        if (!ld.isEmpty()) {
+            return String.format("%1$s%2$s", ld, isObsolete() ? " (Obsolete)" : "");
+        }
 
+        String s;
         if (mVersion.isPreview()) {
             s = String.format("SDK Platform Android %1$s Preview%2$s",
                     getVersionName(),
@@ -224,8 +252,15 @@ public class PlatformPackage extends MinToolsPackage
      */
     @Override
     public String getShortDescription() {
-        String s;
+        String ld = getListDisplay();
+        if (!ld.isEmpty()) {
+            return String.format("%1$s, revision %2$s%3$s",
+                    ld,
+                    getRevision().toShortString(),
+                    isObsolete() ? " (Obsolete)" : "");
+        }
 
+        String s;
         if (mVersion.isPreview()) {
             s = String.format("SDK Platform Android %1$s Preview, revision %2$s%3$s",
                     getVersionName(),

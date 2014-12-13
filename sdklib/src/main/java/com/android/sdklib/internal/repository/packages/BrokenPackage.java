@@ -16,12 +16,14 @@
 
 package com.android.sdklib.internal.repository.packages;
 
+import com.android.annotations.NonNull;
+import com.android.annotations.Nullable;
 import com.android.sdklib.SdkManager;
 import com.android.sdklib.internal.repository.IDescription;
 import com.android.sdklib.internal.repository.ITaskMonitor;
 import com.android.sdklib.internal.repository.archives.Archive;
-import com.android.sdklib.internal.repository.archives.Archive.Arch;
-import com.android.sdklib.internal.repository.archives.Archive.Os;
+import com.android.sdklib.repository.FullRevision;
+import com.android.sdklib.repository.descriptors.IPkgDesc;
 
 import java.io.File;
 import java.util.Properties;
@@ -47,6 +49,7 @@ public class BrokenPackage extends MajorRevisionPackage
 
     private final String mShortDescription;
     private final String mLongDescription;
+    private final IPkgDesc mPkgDesc;
 
     /**
      * Creates a new "broken" package that represents a package that we failed to load,
@@ -55,26 +58,32 @@ public class BrokenPackage extends MajorRevisionPackage
      * <p/>
      * By design, this creates a package with one and only one archive.
      */
-    BrokenPackage(Properties props,
-            String shortDescription,
-            String longDescription,
+    BrokenPackage(@Nullable Properties props,
+            @NonNull String shortDescription,
+            @NonNull String longDescription,
             int minApiLevel,
             int exactApiLevel,
-            String archiveOsPath) {
+            @Nullable String archiveOsPath,
+            @NonNull IPkgDesc pkgDesc) {
         super(  null,                                   //source
                 props,                                  //properties
                 0,                                      //revision will be taken from props
                 null,                                   //license
                 longDescription,                        //description
                 null,                                   //descUrl
-                Os.ANY,                                 //archiveOs
-                Arch.ANY,                               //archiveArch
                 archiveOsPath                           //archiveOsPath
                 );
         mShortDescription = shortDescription;
         mLongDescription = longDescription;
         mMinApiLevel = minApiLevel;
         mExactApiLevel = exactApiLevel;
+        mPkgDesc = pkgDesc;
+    }
+
+    @Override
+    @NonNull
+    public IPkgDesc getPkgDesc() {
+        return mPkgDesc;
     }
 
     /**
@@ -124,6 +133,11 @@ public class BrokenPackage extends MajorRevisionPackage
      */
     @Override
     public String getListDescription() {
+        String ld = getListDisplay();
+        if (!ld.isEmpty()) {
+            return String.format("%1$s%2$s", ld, isObsolete() ? " (Obsolete)" : "");
+        }
+
         return mShortDescription;
     }
 
@@ -197,5 +211,26 @@ public class BrokenPackage extends MajorRevisionPackage
     public void postInstallHook(Archive archive, ITaskMonitor monitor, File installFolder) {
         // Nothing specific to do.
         super.postInstallHook(archive, monitor, installFolder);
+    }
+
+    /**
+     * Similar to {@link BuildToolPackage#comparisonKey()}, but we need to use
+     * {@link #getPkgDesc} instead of {@link #getRevision()}
+     */
+    @Override
+    protected String comparisonKey() {
+        String s = super.comparisonKey();
+        FullRevision rev = getPkgDesc().getFullRevision();
+        if (rev != null) {
+            int pos = s.indexOf("|r:");         //$NON-NLS-1$
+            assert pos > 0;
+            String reverseSort = String.format("|rr:%1$04d.%2$04d.%3$04d.",         //$NON-NLS-1$
+                    9999 - rev.getMajor(),
+                    9999 - rev.getMinor(),
+                    9999 - rev.getMicro());
+
+            s = s.substring(0, pos) + reverseSort + s.substring(pos);
+        }
+        return s;
     }
 }

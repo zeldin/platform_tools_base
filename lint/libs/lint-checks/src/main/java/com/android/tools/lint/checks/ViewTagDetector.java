@@ -43,7 +43,6 @@ import org.objectweb.asm.tree.analysis.BasicValue;
 import org.objectweb.asm.tree.analysis.Frame;
 
 import java.util.Collections;
-import java.util.EnumSet;
 import java.util.List;
 
 /**
@@ -54,7 +53,6 @@ public class ViewTagDetector extends Detector implements ClassScanner {
     public static final Issue ISSUE = Issue.create(
             "ViewTag", //$NON-NLS-1$
             "Tagged object leaks",
-            "Finds potential leaks when using `View.setTag`",
 
             "Prior to Android 4.0, the implementation of `View.setTag(int, Object)` would " +
             "store the objects in a static map, where the values were strongly referenced. " +
@@ -69,7 +67,7 @@ public class ViewTagDetector extends Detector implements ClassScanner {
             Severity.WARNING,
             new Implementation(
                     ViewTagDetector.class,
-                    Scope.CLASS_AND_ALL_RESOURCE_FILES));
+                    Scope.CLASS_FILE_SCOPE));
 
     /** Constructs a new {@link ViewTagDetector} */
     public ViewTagDetector() {
@@ -165,10 +163,10 @@ public class ViewTagDetector extends Detector implements ClassScanner {
 
                 if (objectType != null) {
                     Location location = context.getLocation(call);
-                    String message = String.format("Avoid setting %1$s as values for setTag: " +
+                    String message = String.format("Avoid setting %1$s as values for `setTag`: " +
                         "Can lead to memory leaks in versions older than Android 4.0",
                         objectType);
-                    context.report(ISSUE, method, call, location, message, null);
+                    context.report(ISSUE, method, call, location, message);
                 }
             } catch (AnalyzerException e) {
                 context.log(e, null);

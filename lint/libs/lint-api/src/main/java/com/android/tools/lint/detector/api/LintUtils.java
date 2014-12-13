@@ -17,21 +17,44 @@
 package com.android.tools.lint.detector.api;
 
 import static com.android.SdkConstants.ANDROID_MANIFEST_XML;
+import static com.android.SdkConstants.ANDROID_PREFIX;
+import static com.android.SdkConstants.ANDROID_URI;
 import static com.android.SdkConstants.BIN_FOLDER;
+import static com.android.SdkConstants.DOT_GIF;
+import static com.android.SdkConstants.DOT_JPEG;
+import static com.android.SdkConstants.DOT_JPG;
+import static com.android.SdkConstants.DOT_PNG;
+import static com.android.SdkConstants.DOT_WEBP;
 import static com.android.SdkConstants.DOT_XML;
 import static com.android.SdkConstants.ID_PREFIX;
 import static com.android.SdkConstants.NEW_ID_PREFIX;
+import static com.android.SdkConstants.UTF_8;
 
 import com.android.annotations.NonNull;
 import com.android.annotations.Nullable;
+import com.android.builder.model.AndroidProject;
+import com.android.builder.model.ApiVersion;
+import com.android.ide.common.rendering.api.ItemResourceValue;
+import com.android.ide.common.rendering.api.ResourceValue;
+import com.android.ide.common.rendering.api.StyleResourceValue;
+import com.android.ide.common.res2.AbstractResourceRepository;
+import com.android.ide.common.res2.ResourceItem;
+import com.android.ide.common.resources.ResourceUrl;
 import com.android.resources.FolderTypeRelationship;
 import com.android.resources.ResourceFolderType;
 import com.android.resources.ResourceType;
+import com.android.sdklib.AndroidVersion;
+import com.android.sdklib.IAndroidTarget;
+import com.android.sdklib.SdkVersionInfo;
+import com.android.sdklib.repository.FullRevision;
 import com.android.tools.lint.client.api.LintClient;
 import com.android.utils.PositionXmlParser;
+import com.android.utils.SdkUtils;
 import com.google.common.annotations.Beta;
 import com.google.common.base.Splitter;
 import com.google.common.collect.Iterables;
+import com.google.common.collect.Lists;
+import com.google.common.collect.Sets;
 
 import org.objectweb.asm.Opcodes;
 import org.objectweb.asm.tree.AbstractInsnNode;
@@ -44,8 +67,15 @@ import org.w3c.dom.NodeList;
 import java.io.File;
 import java.io.IOException;
 import java.io.UnsupportedEncodingException;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
+import java.util.Queue;
+import java.util.Set;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+import java.util.regex.PatternSyntaxException;
 
 import lombok.ast.ImportDeclaration;
 
@@ -116,9 +146,23 @@ public class LintUtils {
      * @return true if the given file is an xml file
      */
     public static boolean isXmlFile(@NonNull File file) {
-        String string = file.getName();
-        return string.regionMatches(true, string.length() - DOT_XML.length(),
-                DOT_XML, 0, DOT_XML.length());
+        return SdkUtils.endsWithIgnoreCase(file.getPath(), DOT_XML);
+    }
+
+    /**
+     * Returns true if the given file represents a bitmap drawable file
+     *
+     * @param file the file to be checked
+     * @return true if the given file is an xml file
+     */
+    public static boolean isBitmapFile(@NonNull File file) {
+        String path = file.getPath();
+        // endsWith(name, DOT_PNG) is also true for endsWith(name, DOT_9PNG)
+        return endsWith(path, DOT_PNG)
+                || endsWith(path, DOT_JPG)
+                || endsWith(path, DOT_GIF)
+                || endsWith(path, DOT_JPEG)
+                || endsWith(path, DOT_WEBP);
     }
 
     /**
@@ -341,7 +385,7 @@ public class LintUtils {
      *            path separators.
      * @return the individual path components as an Iterable of strings
      */
-    public static Iterable<String> splitPath(String path) {
+    public static Iterable<String> splitPath(@NonNull String path) {
         if (path.indexOf(';') != -1) {
             return Splitter.on(';').omitEmptyStrings().trimResults().split(path);
         }
@@ -428,7 +472,6 @@ public class LintUtils {
         return null;
     }
 
-    private static final String UTF_8 = "UTF-8";                 //$NON-NLS-1$
     private static final String UTF_16 = "UTF_16";               //$NON-NLS-1$
     private static final String UTF_16LE = "UTF_16LE";           //$NON-NLS-1$
 
@@ -743,8 +786,11 @@ public class LintUtils {
      *         qualified name
      */
     public static boolean isImported(
-            @NonNull lombok.ast.Node compilationUnit,
+            @Nullable lombok.ast.Node compilationUnit,
             @NonNull String fullyQualifiedName) {
+        if (compilationUnit == null) {
+            return false;
+        }
         int dotIndex = fullyQualifiedName.lastIndexOf('.');
         int dotLength = fullyQualifiedName.length() - dotIndex;
 
@@ -773,5 +819,350 @@ public class LintUtils {
         }
 
         return imported;
+    }
+
+    /**
+     * Looks up the resource values for the given attribute given a style. Note that
+     * this only looks project-level style values, it does not resume into the framework
+     * styles.
+     */
+    @Nullable
+    public static List<ResourceValue> getStyleAttributes(
+            @NonNull Project project, @NonNull LintClient client,
+            @NonNull String styleUrl, @NonNull String namespace, @NonNull String attribute) {
+        if (!client.supportsProjectResources()) {
+            return null;
+        }
+
+        AbstractResourceRepository resources = client.getProjectResources(project, true);
+        if (resources == null) {
+            return null;
+        }
+
+        ResourceUrl style = ResourceUrl.parse(styleUrl);
+        if (style == null || style.framework) {
+            return null;
+        }
+
+        List<ResourceValue> result = null;
+
+        Queue<ResourceValue> queue = new ArrayDeque<ResourceValue>();
+        queue.add(new ResourceValue(style.type, style.name, false));
+        Set<String> seen = Sets.newHashSet();
+        int count = 0;
+        boolean isFrameworkAttribute = ANDROID_URI.equals(namespace);
+        while (count < 30 && !queue.isEmpty()) {
+            ResourceValue front = queue.remove();
+            String name = front.getName();
+            seen.add(name);
+            List<ResourceItem> items = resources.getResourceItem(front.getResourceType(), name);
+            if (items != null) {
+                for (ResourceItem item : items) {
+                    ResourceValue rv = item.getResourceValue(false);
+                    if (rv instanceof StyleResourceValue) {
+                        StyleResourceValue srv = (StyleResourceValue) rv;
+                        ItemResourceValue value = srv.getItem(attribute, isFrameworkAttribute);
+                        if (value != null) {
+                            if (result == null) {
+                                result = Lists.newArrayList();
+                            }
+                            if (!result.contains(value)) {
+                                result.add(value);
+                            }
+                        }
+
+                        String parent = srv.getParentStyle();
+                        if (parent != null && !parent.startsWith(ANDROID_PREFIX)) {
+                            ResourceUrl p = ResourceUrl.parse(parent);
+                            if (p != null && !p.framework && !seen.contains(p.name)) {
+                                seen.add(p.name);
+                                queue.add(new ResourceValue(ResourceType.STYLE, p.name,
+                                        false));
+                            }
+                        }
+
+                        int index = name.lastIndexOf('.');
+                        if (index > 0) {
+                            String parentName = name.substring(0, index);
+                            if (!seen.contains(parentName)) {
+                                seen.add(parentName);
+                                queue.add(new ResourceValue(ResourceType.STYLE, parentName,
+                                        false));
+                            }
+                        }
+                    }
+                }
+            }
+
+            count++;
+        }
+
+        return result;
+    }
+
+    @Nullable
+    public static List<StyleResourceValue> getInheritedStyles(
+            @NonNull Project project, @NonNull LintClient client,
+            @NonNull String styleUrl) {
+        if (!client.supportsProjectResources()) {
+            return null;
+        }
+
+        AbstractResourceRepository resources = client.getProjectResources(project, true);
+        if (resources == null) {
+            return null;
+        }
+
+        ResourceUrl style = ResourceUrl.parse(styleUrl);
+        if (style == null || style.framework) {
+            return null;
+        }
+
+        List<StyleResourceValue> result = null;
+
+        Queue<ResourceValue> queue = new ArrayDeque<ResourceValue>();
+        queue.add(new ResourceValue(style.type, style.name, false));
+        Set<String> seen = Sets.newHashSet();
+        int count = 0;
+        while (count < 30 && !queue.isEmpty()) {
+            ResourceValue front = queue.remove();
+            String name = front.getName();
+            seen.add(name);
+            List<ResourceItem> items = resources.getResourceItem(front.getResourceType(), name);
+            if (items != null) {
+                for (ResourceItem item : items) {
+                    ResourceValue rv = item.getResourceValue(false);
+                    if (rv instanceof StyleResourceValue) {
+                        StyleResourceValue srv = (StyleResourceValue) rv;
+                        if (result == null) {
+                            result = Lists.newArrayList();
+                        }
+                        result.add(srv);
+
+                        String parent = srv.getParentStyle();
+                        if (parent != null && !parent.startsWith(ANDROID_PREFIX)) {
+                            ResourceUrl p = ResourceUrl.parse(parent);
+                            if (p != null && !p.framework && !seen.contains(p.name)) {
+                                seen.add(p.name);
+                                queue.add(new ResourceValue(ResourceType.STYLE, p.name,
+                                        false));
+                            }
+                        }
+
+                        int index = name.lastIndexOf('.');
+                        if (index > 0) {
+                            String parentName = name.substring(0, index);
+                            if (!seen.contains(parentName)) {
+                                seen.add(parentName);
+                                queue.add(new ResourceValue(ResourceType.STYLE, parentName,
+                                        false));
+                            }
+                        }
+                    }
+                }
+            }
+
+            count++;
+        }
+
+        return result;
+    }
+
+    /** Returns true if the given two paths point to the same logical resource file within
+     * a source set. This means that it only checks the parent folder name and individual
+     * file name, not the path outside the parent folder.
+     *
+     * @param file1 the first file to compare
+     * @param file2 the second file to compare
+     * @return true if the two files have the same parent and file names
+     */
+    public static boolean isSameResourceFile(@Nullable File file1, @Nullable File file2) {
+        if (file1 != null && file2 != null
+                && file1.getName().equals(file2.getName())) {
+            File parent1 = file1.getParentFile();
+            File parent2 = file2.getParentFile();
+            if (parent1 != null && parent2 != null &&
+                    parent1.getName().equals(parent2.getName())) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Whether we should attempt to look up the prefix from the model. Set to false
+     * if we encounter a model which is too old.
+     * <p>
+     * This is public such that code which for example syncs to a new gradle model
+     * can reset it.
+     */
+    public static boolean sTryPrefixLookup = true;
+
+    /** Looks up the resource prefix for the given Gradle project, if possible */
+    @Nullable
+    public static String computeResourcePrefix(@Nullable AndroidProject project) {
+        try {
+            if (sTryPrefixLookup && project != null) {
+                return project.getResourcePrefix();
+            }
+        } catch (Exception e) {
+            // This happens if we're talking to an older model than 0.10
+            // Ignore; fall through to normal handling and never try again.
+            //noinspection AssignmentToStaticFieldFromInstanceMethod
+            sTryPrefixLookup = false;
+        }
+
+        return null;
+    }
+
+    /** Computes a suggested name given a resource prefix and resource name */
+    public static String computeResourceName(@NonNull String prefix, @NonNull String name) {
+        if (prefix.isEmpty()) {
+            return name;
+        } else if (name.isEmpty()) {
+            return prefix;
+        } else if (prefix.endsWith("_")) {
+            return prefix + name;
+        } else {
+            return prefix + Character.toUpperCase(name.charAt(0)) + name.substring(1);
+        }
+    }
+
+
+    /**
+     * Convert an {@link com.android.builder.model.ApiVersion} to a {@link
+     * com.android.sdklib.AndroidVersion}. The chief problem here is that the {@link
+     * com.android.builder.model.ApiVersion}, when using a codename, will not encode the
+     * corresponding API level (it just reflects the string entered by the user in the gradle file)
+     * so we perform a search here (since lint really wants to know the actual numeric API level)
+     *
+     * @param api     the api version to convert
+     * @param targets if known, the installed targets (used to resolve platform codenames, only
+     *                needed to resolve platforms newer than the tools since {@link
+     *                com.android.sdklib.SdkVersionInfo} knows the rest)
+     * @return the corresponding version
+     */
+    @NonNull
+    public static AndroidVersion convertVersion(
+            @NonNull ApiVersion api,
+            @Nullable IAndroidTarget[] targets) {
+        String codename = api.getCodename();
+        if (codename != null) {
+            AndroidVersion version = SdkVersionInfo.getVersion(codename, targets);
+            if (version != null) {
+                return version;
+            }
+            return new AndroidVersion(api.getApiLevel(), codename);
+        }
+        return new AndroidVersion(api.getApiLevel(), null);
+    }
+
+    /**
+     * Returns true if the given Gradle model is older than the given version number
+     */
+    public static boolean isModelOlderThan(@Nullable AndroidProject project,
+            int major, int minor, int micro) {
+        if (project != null) {
+            String modelVersion = project.getModelVersion();
+            try {
+                FullRevision version = FullRevision.parseRevision(modelVersion);
+                if (version.getMajor() != major) {
+                    return version.getMajor() < major;
+                }
+                if (version.getMinor() != minor) {
+                    return version.getMinor() < minor;
+                }
+                return version.getMicro() < micro;
+            } catch (NumberFormatException e) {
+                // ignore
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Looks for a certain string within a larger string, which should immediately follow
+     * the given prefix and immediately precede the given suffix.
+     *
+     * @param string the full string to search
+     * @param prefix the optional prefix to follow
+     * @param suffix the optional suffix to precede
+     * @return the corresponding substring, if present
+     */
+    @Nullable
+    public static String findSubstring(@NonNull String string, @Nullable String prefix,
+            @Nullable String suffix) {
+        int start = 0;
+        if (prefix != null) {
+            start = string.indexOf(prefix);
+            if (start == -1) {
+                return null;
+            }
+            start += prefix.length();
+        }
+
+        if (suffix != null) {
+            int end = string.indexOf(suffix, start);
+            if (end == -1) {
+                return null;
+            }
+            return string.substring(start, end);
+        }
+
+        return string.substring(start);
+    }
+
+    /**
+     * Splits up the given message coming from a given string format (where the string
+     * format follows the very specific convention of having only strings formatted exactly
+     * with the format %n$s where n is between 1 and 9 inclusive, and each formatting parameter
+     * appears exactly once, and in increasing order.
+     *
+     * @param format the format string responsible for creating the error message
+     * @param errorMessage an error message formatted with the format string
+     * @return the specific values inserted into the format
+     */
+    @NonNull
+    public static List<String> getFormattedParameters(
+            @NonNull String format,
+            @NonNull String errorMessage) {
+        StringBuilder pattern = new StringBuilder(format.length());
+        int parameter = 1;
+        for (int i = 0, n = format.length(); i < n; i++) {
+            char c = format.charAt(i);
+            if (c == '%') {
+                // Only support formats of the form %n$s where n is 1 <= n <=9
+                assert i < format.length() - 4 : format;
+                assert format.charAt(i + 1) == ('0' + parameter) : format;
+                assert Character.isDigit(format.charAt(i + 1)) : format;
+                assert format.charAt(i + 2) == '$' : format;
+                assert format.charAt(i + 3) == 's' : format;
+                parameter++;
+                i += 3;
+                pattern.append("(.*)");
+            } else {
+                pattern.append(c);
+            }
+        }
+        try {
+            Pattern compile = Pattern.compile(pattern.toString());
+            Matcher matcher = compile.matcher(errorMessage);
+            if (matcher.find()) {
+                int groupCount = matcher.groupCount();
+                List<String> parameters = Lists.newArrayListWithExpectedSize(groupCount);
+                for (int i = 1; i <= groupCount; i++) {
+                    parameters.add(matcher.group(i));
+                }
+
+                return parameters;
+            }
+
+        } catch (PatternSyntaxException pse) {
+            // Internal error: string format is not valid. Should be caught by unit tests
+            // as a failure to return the formatted parameters.
+        }
+        return Collections.emptyList();
     }
 }

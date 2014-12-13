@@ -27,6 +27,7 @@ import com.android.tools.lint.detector.api.Location;
 import com.android.tools.lint.detector.api.Scope;
 import com.android.tools.lint.detector.api.Severity;
 import com.android.tools.lint.detector.api.Speed;
+import com.google.common.collect.Lists;
 import com.google.common.collect.Sets;
 
 import org.objectweb.asm.Opcodes;
@@ -43,8 +44,6 @@ import java.io.File;
 import java.util.List;
 import java.util.Set;
 
-import lombok.ast.libs.org.parboiled.google.collect.Lists;
-
 /**
  * Looks for usages of Java packages that are not included in Android.
  */
@@ -53,7 +52,6 @@ public class InvalidPackageDetector extends Detector implements Detector.ClassSc
     public static final Issue ISSUE = Issue.create(
             "InvalidPackage", //$NON-NLS-1$
             "Package not included in Android",
-            "Finds API accesses to APIs that are not supported in Android",
 
             "This check scans through libraries looking for calls to APIs that are not included " +
             "in Android.\n" +
@@ -123,6 +121,11 @@ public class InvalidPackageDetector extends Detector implements Detector.ClassSc
             return;
         }
 
+        if ((classNode.access & Opcodes.ACC_ANNOTATION) != 0
+                || classNode.superName.startsWith("javax/annotation/")) {
+            // Don't flag references from annotations and annotation processors
+            return;
+        }
         if (classNode.name.startsWith(JAVAX_PKG_PREFIX)) {
             mJavaxLibraryClasses.add(classNode.name);
         }
@@ -204,8 +207,18 @@ public class InvalidPackageDetector extends Detector implements Detector.ClassSc
     }
 
     private boolean isInvalidPackage(String owner) {
-        if (owner.startsWith(JAVA_PKG_PREFIX)
-                || owner.startsWith(JAVAX_PKG_PREFIX)) {
+        if (owner.startsWith(JAVA_PKG_PREFIX)) {
+            return !mApiDatabase.isValidJavaPackage(owner);
+        }
+
+        if (owner.startsWith(JAVAX_PKG_PREFIX)) {
+            // Annotations-related code is usually fine; these tend to be for build time
+            // jars, such as dagger
+            //noinspection SimplifiableIfStatement
+            if (owner.startsWith("javax/annotation/") || owner.startsWith("javax/lang/model")) {
+                return false;
+            }
+
             return !mApiDatabase.isValidJavaPackage(owner);
         }
 
@@ -232,6 +245,8 @@ public class InvalidPackageDetector extends Detector implements Detector.ClassSc
             return;
         }
 
+        Set<String> seen = Sets.newHashSet();
+
         for (Candidate candidate : mCandidates) {
             String type = candidate.mClass;
             if (mJavaxLibraryClasses.contains(type)) {
@@ -241,15 +256,29 @@ public class InvalidPackageDetector extends Detector implements Detector.ClassSc
             String referencedIn = candidate.mReferencedIn;
 
             Location location = Location.create(jarFile);
-            Object pkg = getPackageName(type);
+            String pkg = getPackageName(type);
+            if (seen.contains(pkg)) {
+                continue;
+            }
+            seen.add(pkg);
+
+            if (pkg.equals("javax.inject")) {
+                String name = jarFile.getName();
+                //noinspection SpellCheckingInspection
+                if (name.startsWith("dagger-") || name.startsWith("guice-")) {
+                    // White listed
+                    return;
+                }
+            }
+
             String message = String.format(
-                    "Invalid package reference in library; not included in Android: %1$s. " +
-                    "Referenced from %2$s.", pkg, ClassContext.getFqcn(referencedIn));
-            context.report(ISSUE, location, message, null);
+                    "Invalid package reference in library; not included in Android: `%1$s`. " +
+                    "Referenced from `%2$s`.", pkg, ClassContext.getFqcn(referencedIn));
+            context.report(ISSUE, location, message);
         }
     }
 
-    private static Object getPackageName(String owner) {
+    private static String getPackageName(String owner) {
         String pkg = owner;
         int index = pkg.lastIndexOf('/');
         if (index != -1) {

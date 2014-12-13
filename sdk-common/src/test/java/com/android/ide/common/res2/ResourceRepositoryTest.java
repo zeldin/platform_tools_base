@@ -17,6 +17,7 @@
 package com.android.ide.common.res2;
 
 import com.android.ide.common.rendering.api.AttrResourceValue;
+import com.android.ide.common.rendering.api.ItemResourceValue;
 import com.android.ide.common.rendering.api.ResourceValue;
 import com.android.ide.common.rendering.api.StyleResourceValue;
 import com.android.resources.ResourceFolderType;
@@ -45,12 +46,12 @@ public class ResourceRepositoryTest extends BaseTestCase {
         assertEquals(1, items.get(ResourceType.RAW).size());
         assertEquals(4, items.get(ResourceType.LAYOUT).size());
         assertEquals(1, items.get(ResourceType.COLOR).size());
-        assertEquals(3, items.get(ResourceType.STRING).size());
+        assertEquals(4, items.get(ResourceType.STRING).size());
         assertEquals(1, items.get(ResourceType.STYLE).size());
         assertEquals(1, items.get(ResourceType.ARRAY).size());
-        assertEquals(6, items.get(ResourceType.ATTR).size());
+        assertEquals(7, items.get(ResourceType.ATTR).size());
         assertEquals(1, items.get(ResourceType.DECLARE_STYLEABLE).size());
-        assertEquals(1, items.get(ResourceType.DIMEN).size());
+        assertEquals(2, items.get(ResourceType.DIMEN).size());
         assertEquals(1, items.get(ResourceType.ID).size());
         assertEquals(1, items.get(ResourceType.INTEGER).size());
     }
@@ -58,9 +59,10 @@ public class ResourceRepositoryTest extends BaseTestCase {
     public void testMergedResourcesByName() throws Exception {
         ResourceRepository repo = getResourceRepository();
 
+        // use ? between type and qualifier because of declare-styleable
         verifyResourceExists(repo,
                 "drawable/icon",
-                "drawable?ldpi/icon",
+                "drawable?ldpi-v4/icon",
                 "drawable/icon2",
                 "drawable/patch",
                 "drawable/color_drawable",
@@ -82,8 +84,10 @@ public class ResourceRepositoryTest extends BaseTestCase {
                 "attr/flag_attr",
                 "attr/blah",
                 "attr/blah2",
+                "attr/flagAttr",
                 "declare-styleable/declare_styleable",
                 "dimen/dimen",
+                "dimen?sw600dp-v13/offset",
                 "id/item_id",
                 "integer/integer"
         );
@@ -185,23 +189,23 @@ public class ResourceRepositoryTest extends BaseTestCase {
 
         assertEquals("@android:style/Holo.Light", styleResourceValue.getParentStyle());
 
-        ResourceValue styleValue = styleResourceValue.findValue("singleLine", true /*framework*/);
+        ItemResourceValue styleValue = styleResourceValue.getItem("singleLine", true /*framework*/);
         assertNotNull(styleValue);
         assertEquals("true", styleValue.getValue());
 
-        styleValue = styleResourceValue.findValue("textAppearance", true /*framework*/);
+        styleValue = styleResourceValue.getItem("textAppearance", true /*framework*/);
         assertNotNull(styleValue);
         assertEquals("@style/TextAppearance.WindowTitle", styleValue.getValue());
 
-        styleValue = styleResourceValue.findValue("shadowColor", true /*framework*/);
+        styleValue = styleResourceValue.getItem("shadowColor", true /*framework*/);
         assertNotNull(styleValue);
         assertEquals("#BB000000", styleValue.getValue());
 
-        styleValue = styleResourceValue.findValue("shadowRadius", true /*framework*/);
+        styleValue = styleResourceValue.getItem("shadowRadius", true /*framework*/);
         assertNotNull(styleValue);
         assertEquals("2.75", styleValue.getValue());
 
-        styleValue = styleResourceValue.findValue("foo", false /*framework*/);
+        styleValue = styleResourceValue.getItem("foo", false /*framework*/);
         assertNotNull(styleValue);
         assertEquals("foo", styleValue.getValue());
     }
@@ -228,7 +232,7 @@ public class ResourceRepositoryTest extends BaseTestCase {
         verifyResourceExists(repo,
                 "drawable/new_overlay",
                 "drawable/removed",
-                "drawable?ldpi/removed",
+                "drawable?ldpi-v4/removed",
                 "drawable/touched",
                 "drawable/removed_overlay",
                 "drawable/untouched");
@@ -291,7 +295,7 @@ public class ResourceRepositoryTest extends BaseTestCase {
                 "drawable/touched",
                 "drawable/removed_overlay",
                 "drawable/untouched",
-                "drawable?hdpi/new_alternate");
+                "drawable?hdpi-v4/new_alternate");
         checkRemovedItems(resourceMerger);
     }
 
@@ -494,7 +498,14 @@ public class ResourceRepositoryTest extends BaseTestCase {
         checkRemovedItems(resourceMerger);
     }
 
-    private void checkRemovedItems(DataMap<? extends DataItem> dataMap) {
+    public void testUpdateFromOldFile() throws Exception {
+        File root = getIncMergeRoot("oldMerge");
+        File fakeRoot = getMergedBlobFolder(root);
+        ResourceMerger resourceMerger = new ResourceMerger();
+        assertFalse(resourceMerger.loadFromBlob(fakeRoot, false /*incrementalState*/));
+    }
+
+    private static void checkRemovedItems(DataMap<? extends DataItem> dataMap) {
         for (DataItem item : dataMap.getDataMap().values()) {
             if (item.isRemoved()) {
                 fail("Removed item found: " + item);
@@ -509,8 +520,6 @@ public class ResourceRepositoryTest extends BaseTestCase {
      *
      * Each set is [ setName, folder1, folder2, ...]
      *
-     * @param data
-     * @return
      */
     private static ResourceMerger createMerger(String[][] data) {
         ResourceMerger merger = new ResourceMerger();
@@ -573,7 +582,7 @@ public class ResourceRepositoryTest extends BaseTestCase {
         return resourceMerger;
     }
 
-    private ResourceRepository getResourceRepository()
+    private static ResourceRepository getResourceRepository()
             throws MergingException, IOException {
         ResourceMerger merger = getBaseResourceMerger();
 
@@ -588,7 +597,7 @@ public class ResourceRepositoryTest extends BaseTestCase {
         return new File(root, name);
     }
 
-    private void verifyResourceExists(ResourceRepository repository,
+    private static void verifyResourceExists(ResourceRepository repository,
             String... dataItemKeys) {
         Map<ResourceType, ListMultimap<String, ResourceItem>> items = repository.getItems();
 
@@ -603,6 +612,8 @@ public class ResourceRepositoryTest extends BaseTestCase {
                 throw new IllegalArgumentException("Invalid key " + resKey);
             }
 
+            // use ? as a qualifier delimiter because of
+            // declare-styleable
             pos = type.indexOf('?');
             if (pos != -1) {
                 qualifier = type.substring(pos + 1);
@@ -690,16 +701,15 @@ public class ResourceRepositoryTest extends BaseTestCase {
                                 sb.append("  parentStyle=").append(srv.getParentStyle())
                                         .append("\n");
                                 for (String name : srv.getNames()) {
-                                    ResourceValue value1 = srv.findValue(name, false);
-                                    ResourceValue value2 = srv.findValue(name, true);
+                                    ItemResourceValue value1 = srv.getItem(name, false);
+                                    ItemResourceValue value2 = srv.getItem(name, true);
                                     if (value1 != null) {
                                         Boolean framework = false;
-                                        ResourceValue v = value1;
                                         sb.append("    ");
                                         sb.append(name).append(" ").append(framework).append(" ");
                                         sb.append(" = ");
                                         sb.append('"');
-                                        String strValue = v.getValue();
+                                        String strValue = value1.getValue();
                                         if (strValue != null) {
                                             sb.append(strValue.replace("\n", "\\n"));
                                         } else {
@@ -709,12 +719,11 @@ public class ResourceRepositoryTest extends BaseTestCase {
                                     }
                                     if (value2 != null) {
                                         Boolean framework = true;
-                                        ResourceValue v = value2;
                                         sb.append("    ");
                                         sb.append(name).append(" ").append(framework).append(" ");
                                         sb.append(" = ");
                                         sb.append('"');
-                                        String strValue = v.getValue();
+                                        String strValue = value2.getValue();
                                         if (strValue != null) {
                                             sb.append(strValue.replace("\n", "\\n"));
                                         } else {

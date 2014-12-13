@@ -18,15 +18,17 @@ package com.android.tools.lint;
 
 import com.android.annotations.NonNull;
 import com.android.annotations.Nullable;
-import com.android.tools.lint.client.api.Configuration;
 import com.android.tools.lint.client.api.LintClient;
 import com.android.tools.lint.detector.api.Issue;
+import com.android.tools.lint.detector.api.Severity;
 import com.google.common.annotations.Beta;
 import com.google.common.collect.Lists;
 
 import java.io.File;
+import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 /**
@@ -39,6 +41,7 @@ import java.util.Set;
 public class LintCliFlags {
     private final Set<String> mSuppress = new HashSet<String>();
     private final Set<String> mEnabled = new HashSet<String>();
+    private Map<String,Severity> mSeverities;
     private Set<String> mCheck = null;
     private boolean mSetExitCode;
     private boolean mFullPath;
@@ -48,13 +51,22 @@ public class LintCliFlags {
     private boolean mWarnAll;
     private boolean mNoWarnings;
     private boolean mAllErrors;
+    private boolean mFatalOnly;
+    private boolean mExplainIssues;
     private List<File> mSources;
     private List<File> mClasses;
     private List<File> mLibraries;
     private List<File> mResources;
 
-    private Configuration mDefaultConfiguration;
+    private File mDefaultConfiguration;
     private boolean mShowAll;
+
+    public static final int ERRNO_SUCCESS = 0;
+    public static final int ERRNO_ERRORS = 1;
+    public static final int ERRNO_USAGE = 2;
+    public static final int ERRNO_EXISTS = 3;
+    public static final int ERRNO_HELP = 4;
+    public static final int ERRNO_INVALID_ARGS = 5;
 
     /**
      * Returns the set of issue id's to suppress. Callers are allowed to modify this collection.
@@ -72,6 +84,15 @@ public class LintCliFlags {
     @NonNull
     public Set<String> getEnabledIds() {
         return mEnabled;
+    }
+
+    /**
+     * Returns a map of manually configured severities to use
+     * @return the severity to use for a given issue id
+     */
+    @NonNull
+    public Map<String,Severity> getSeverityOverrides() {
+        return mSeverities == null ? Collections.<String,Severity>emptyMap() : mSeverities;
     }
 
     /**
@@ -206,20 +227,20 @@ public class LintCliFlags {
     }
 
     /**
-     * Returns the default configuration to use as a fallback
+     * Returns the default configuration file to use as a fallback
      */
     @Nullable
-    public Configuration getDefaultConfiguration() {
+    public File getDefaultConfiguration() {
         return mDefaultConfiguration;
     }
 
     /**
-     * Sets the default configuration to use as a fallback. This corresponds to a {@code lint.xml}
+     * Sets the default config file to use as a fallback. This corresponds to a {@code lint.xml}
      * file with severities etc to use when a project does not have more specific information.
      * To construct a configuration from a {@link java.io.File}, use
      * {@link LintCliClient#createConfigurationFromFile(java.io.File)}.
      */
-    public void setDefaultConfiguration(@Nullable Configuration defaultConfiguration) {
+    public void setDefaultConfiguration(@Nullable File defaultConfiguration) {
         mDefaultConfiguration = defaultConfiguration;
     }
 
@@ -329,5 +350,49 @@ public class LintCliFlags {
      */
     public void setResourcesOverride(@Nullable List<File> resources) {
         mResources = resources;
+    }
+
+    /**
+     * Returns true if we should only check fatal issues
+     * @return true if we should only check fatal issues
+     */
+    public boolean isFatalOnly() {
+        return mFatalOnly;
+    }
+
+    /**
+     * Sets whether we should only check fatal issues
+     * @param fatalOnly if true, only check fatal issues
+     */
+    public void setFatalOnly(boolean fatalOnly) {
+        mFatalOnly = fatalOnly;
+    }
+
+    /**
+     * Sets a map of severities to use
+     * @param severities map from issue id to severity
+     */
+    public void setSeverityOverrides(@NonNull Map<String, Severity> severities) {
+        mSeverities = severities;
+    }
+
+    /**
+     * Whether text reports should include full explanation texts. (HTML and XML reports always
+     * do, unconditionally.)
+     *
+     * @return true if text reports should include explanation text
+     */
+    public boolean isExplainIssues() {
+        return mExplainIssues;
+    }
+
+    /**
+     * Sets whether text reports should include full explanation texts. (HTML and XML reports
+     * always do, unconditionally.)
+     *
+     * @param explainText true if text reports should include explanation text
+     */
+    public void setExplainIssues(boolean explainText) {
+        mExplainIssues = explainText;
     }
 }

@@ -19,6 +19,8 @@ package com.android.sdklib.internal.avd;
 import com.android.SdkConstants;
 import com.android.annotations.NonNull;
 import com.android.annotations.Nullable;
+import com.android.annotations.VisibleForTesting;
+import com.android.annotations.VisibleForTesting.Visibility;
 import com.android.io.FileWrapper;
 import com.android.io.IAbstractFile;
 import com.android.io.StreamException;
@@ -27,14 +29,22 @@ import com.android.prefs.AndroidLocation.AndroidLocationException;
 import com.android.sdklib.IAndroidTarget;
 import com.android.sdklib.ISystemImage;
 import com.android.sdklib.SdkManager;
+import com.android.sdklib.SystemImage;
+import com.android.sdklib.devices.Abi;
+import com.android.sdklib.devices.Device;
 import com.android.sdklib.devices.DeviceManager;
 import com.android.sdklib.devices.DeviceManager.DeviceStatus;
 import com.android.sdklib.internal.avd.AvdInfo.AvdStatus;
 import com.android.sdklib.internal.project.ProjectProperties;
-import com.android.sdklib.util.GrabProcessOutput;
-import com.android.sdklib.util.GrabProcessOutput.IProcessOutput;
-import com.android.sdklib.util.GrabProcessOutput.Wait;
+import com.android.sdklib.io.FileOp;
+import com.android.sdklib.repository.descriptors.IdDisplay;
+import com.android.sdklib.repository.local.LocalSdk;
+import com.android.sdklib.repository.local.LocalSysImgPkgInfo;
+import com.android.utils.GrabProcessOutput;
+import com.android.utils.GrabProcessOutput.IProcessOutput;
+import com.android.utils.GrabProcessOutput.Wait;
 import com.android.utils.ILogger;
+import com.android.utils.NullLogger;
 import com.android.utils.Pair;
 import com.google.common.base.Charsets;
 import com.google.common.io.Closeables;
@@ -51,10 +61,11 @@ import java.io.InputStreamReader;
 import java.io.OutputStreamWriter;
 import java.nio.charset.Charset;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
-import java.util.Map.Entry;
 import java.util.WeakHashMap;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -102,20 +113,27 @@ public class AvdManager {
     public static final String AVD_INFO_TARGET = "target";     //$NON-NLS-1$
 
     /**
+     * AVD/config.ini key name representing the tag id of the specific avd
+     */
+    public static final String AVD_INI_TAG_ID = "tag.id"; //$NON-NLS-1$
+
+    /**
+     * AVD/config.ini key name representing the tag display of the specific avd
+     */
+    public static final String AVD_INI_TAG_DISPLAY = "tag.display"; //$NON-NLS-1$
+
+    /**
      * AVD/config.ini key name representing the abi type of the specific avd
-     *
      */
     public static final String AVD_INI_ABI_TYPE = "abi.type"; //$NON-NLS-1$
 
     /**
      * AVD/config.ini key name representing the CPU architecture of the specific avd
-     *
      */
     public static final String AVD_INI_CPU_ARCH = "hw.cpu.arch"; //$NON-NLS-1$
 
     /**
      * AVD/config.ini key name representing the CPU architecture of the specific avd
-     *
      */
     public static final String AVD_INI_CPU_MODEL = "hw.cpu.model"; //$NON-NLS-1$
 
@@ -219,9 +237,21 @@ public class AvdManager {
     public static final String AVD_INI_DATA_PARTITION_SIZE = "disk.dataPartition.size";
 
     /**
-     * AVD/config.ini key name representing the hash of the device this AVD is based on
+     * AVD/config.ini key name representing the hash of the device this AVD is based on. <br/>
+     * This old hash is deprecated and shouldn't be used anymore.
+     * It represents the Device.hashCode() and is not stable accross implementations.
+     * @see #AVD_INI_DEVICE_HASH_V2
      */
-    public static final String AVD_INI_DEVICE_HASH = "hw.device.hash";
+    public static final String AVD_INI_DEVICE_HASH_V1 = "hw.device.hash";
+
+    /**
+     * AVD/config.ini key name representing the hash of the device hardware properties
+     * actually present in the config.ini. This replaces {@link #AVD_INI_DEVICE_HASH_V1}.
+     * <p/>
+     * To find this hash, use
+     * {@code DeviceManager.getHardwareProperties(device).get(AVD_INI_DEVICE_HASH_V2)}.
+     */
+    public static final String AVD_INI_DEVICE_HASH_V2 = "hw.device.hash2";
 
     /**
      * Pattern to match pixel-sized skin "names", e.g. "320x480".
@@ -229,6 +259,7 @@ public class AvdManager {
     public static final Pattern NUMERIC_SKIN_SIZE = Pattern.compile("([0-9]{2,})x([0-9]{2,})"); //$NON-NLS-1$
 
     private static final String USERDATA_IMG = "userdata.img"; //$NON-NLS-1$
+    private static final String BOOT_PROP = "boot.prop"; //$NON-NLS-1$
     static final String CONFIG_INI = "config.ini"; //$NON-NLS-1$
     private static final String SDCARD_IMG = "sdcard.img"; //$NON-NLS-1$
     private static final String SNAPSHOTS_IMG = "snapshots.img"; //$NON-NLS-1$
@@ -298,11 +329,11 @@ public class AvdManager {
     private final ArrayList<AvdInfo> mAllAvdList = new ArrayList<AvdInfo>();
     private AvdInfo[] mValidAvdList;
     private AvdInfo[] mBrokenAvdList;
-    private final SdkManager mSdkManager;
+    private final LocalSdk myLocalSdk;
 
     /**
-     * Creates an AVD Manager for a given SDK represented by a {@link SdkManager}.
-     * @param sdkManager The SDK.
+     * Creates an AVD Manager for a given SDK represented by a {@link LocalSdk}.
+     * @param localSdk The SDK.
      * @param log The log object to receive the log of the initial loading of the AVDs.
      *            This log object is not kept by this instance of AvdManager and each
      *            method takes its own logger. The rationale is that the AvdManager
@@ -310,20 +341,35 @@ public class AvdManager {
      *            logging needs. Cannot be null.
      * @throws AndroidLocationException
      */
-    protected AvdManager(SdkManager sdkManager, ILogger log) throws AndroidLocationException {
-        mSdkManager = sdkManager;
+    protected AvdManager(@NonNull LocalSdk localSdk, @NonNull ILogger log)
+            throws AndroidLocationException {
+        myLocalSdk = localSdk;
         buildAvdList(mAllAvdList, log);
     }
 
-    public static AvdManager getInstance(SdkManager sdkManager, ILogger log)
+    /**
+     * Returns an AVD Manager for a given SDK represented by a {@link LocalSdk}.
+     * One AVD Manager instance is created by SDK location and then cached and reused.
+     *
+     * @param localSdk The SDK.
+     * @param log The log object to receive the log of the initial loading of the AVDs.
+     *            This log object is not kept by this instance of AvdManager and each
+     *            method takes its own logger. The rationale is that the AvdManager
+     *            might be called from a variety of context, each with different
+     *            logging needs. Cannot be null.
+     * @throws AndroidLocationException
+     */
+    @NonNull
+    public static AvdManager getInstance(@NonNull LocalSdk localSdk, @NonNull ILogger log)
             throws AndroidLocationException {
         synchronized(mManagers) {
             AvdManager manager;
-            if ((manager = mManagers.get(sdkManager.getLocation())) != null) {
+            if ((manager = mManagers.get(localSdk.getLocation().getPath())) != null) {
                 return manager;
             }
-            manager = new AvdManager(sdkManager, log);
-            mManagers.put(sdkManager.getLocation(), manager);
+            manager = new AvdManager(localSdk, log);
+
+            mManagers.put(localSdk.getLocation().getPath(), manager);
             return manager;
         }
     }
@@ -333,16 +379,29 @@ public class AvdManager {
      *
      * @throws AndroidLocationException
      */
+    @NonNull
     public String getBaseAvdFolder() throws AndroidLocationException {
         assert AndroidLocation.getFolder().endsWith(File.separator);
         return AndroidLocation.getFolder() + AndroidLocation.FOLDER_AVD;
     }
 
     /**
-     * Returns the {@link SdkManager} associated with the {@link AvdManager}.
+     * Returns the {@link LocalSdk} associated with the {@link AvdManager}.
      */
+    @NonNull
+    public LocalSdk getLocalSdk() {
+        return myLocalSdk;
+    }
+
+    /**
+     * Returns the {@link SdkManager} associated with the {@link AvdManager}.
+     * Note: This is temporary and will be removed as SdkManager is phased out.
+     * TODO: Remove this when SdkManager is removed
+     */
+    @NonNull
+    @Deprecated
     public SdkManager getSdkManager() {
-        return mSdkManager;
+        return SdkManager.createManager(myLocalSdk.getPath(), NullLogger.getLogger());
     }
 
     /**
@@ -366,7 +425,7 @@ public class AvdManager {
      * @return A size in byte if > 0, or {@link #SDCARD_SIZE_NOT_IN_RANGE},
      *  {@link #SDCARD_SIZE_INVALID} or {@link #SDCARD_NOT_SIZE_PATTERN} as error codes.
      */
-    public static long parseSdcardSize(String sdcard, String[] parsedStrings) {
+    public static long parseSdcardSize(@NonNull String sdcard, @Nullable String[] parsedStrings) {
 
         if (parsedStrings != null) {
             assert parsedStrings.length == 2;
@@ -414,6 +473,7 @@ public class AvdManager {
      * Returns all the existing AVDs.
      * @return a newly allocated array containing all the AVDs.
      */
+    @NonNull
     public AvdInfo[] getAllAvds() {
         synchronized (mAllAvdList) {
             return mAllAvdList.toArray(new AvdInfo[mAllAvdList.size()]);
@@ -424,6 +484,7 @@ public class AvdManager {
      * Returns all the valid AVDs.
      * @return a newly allocated array containing all valid the AVDs.
      */
+    @NonNull
     public AvdInfo[] getValidAvds() {
         synchronized (mAllAvdList) {
             if (mValidAvdList == null) {
@@ -444,6 +505,7 @@ public class AvdManager {
      * Returns all the broken AVDs.
      * @return a newly allocated array containing all the broken AVDs.
      */
+    @NonNull
     public AvdInfo[] getBrokenAvds() {
         synchronized (mAllAvdList) {
             if (mBrokenAvdList == null) {
@@ -468,7 +530,8 @@ public class AvdManager {
      * @param validAvdOnly if <code>true</code>, only look through the list of valid AVDs.
      * @return the matching AvdInfo or <code>null</code> if none were found.
      */
-    public AvdInfo getAvd(String name, boolean validAvdOnly) {
+    @Nullable
+    public AvdInfo getAvd(@Nullable String name, boolean validAvdOnly) {
 
         boolean ignoreCase = SdkConstants.currentPlatform() == SdkConstants.PLATFORM_WINDOWS;
 
@@ -499,7 +562,8 @@ public class AvdManager {
      * @param name the name of the AVD to return
      * @return A pair of {@link AvdConflict} and the path or AVD name that conflicts.
      */
-    public Pair<AvdConflict, String> isAvdNameConflicting(String name) {
+    @NonNull
+    public Pair<AvdConflict, String> isAvdNameConflicting(@Nullable String name) {
 
         boolean ignoreCase = SdkConstants.currentPlatform() == SdkConstants.PLATFORM_WINDOWS;
 
@@ -527,7 +591,7 @@ public class AvdManager {
                 return Pair.of(AvdConflict.CONFLICT_EXISTING_PATH, file.getPath());
             }
 
-            file = AvdInfo.getDefaultAvdFolder(this, name);
+            file = AvdInfo.getDefaultAvdFolder(this, name, false);
             if (file.exists()) {
                 return Pair.of(AvdConflict.CONFLICT_EXISTING_PATH, file.getPath());
             }
@@ -546,7 +610,7 @@ public class AvdManager {
      * @throws AndroidLocationException if there was an error finding the location of the
      * AVD folder.
      */
-    public void reloadAvds(ILogger log) throws AndroidLocationException {
+    public void reloadAvds(@NonNull ILogger log) throws AndroidLocationException {
         // build the list in a temp list first, in case the method throws an exception.
         // It's better than deleting the whole list before reading the new one.
         ArrayList<AvdInfo> allList = new ArrayList<AvdInfo>();
@@ -567,11 +631,15 @@ public class AvdManager {
      *   {@code AvdManager.AvdInfo.getAvdFolder}.
      * @param avdName the name of the AVD
      * @param target the target of the AVD
+     * @param tag the tag of the AVD
      * @param abiType the abi type of the AVD
+     * @param skinFolder the skin folder path to use, if specified. Can be null.
      * @param skinName the name of the skin. Can be null. Must have been verified by caller.
+     *          Can be a size in the form "NNNxMMM" or a directory name matching skinFolder.
      * @param sdcard the parameter value for the sdCard. Can be null. This is either a path to
      *        an existing sdcard image or a sdcard size (\d+, \d+K, \dM).
      * @param hardwareConfig the hardware setup for the AVD. Can be null to use defaults.
+     * @param bootProps the optional boot properties for the AVD. Can be null.
      * @param createSnapshot If true copy a blank snapshot image into the AVD.
      * @param removePrevious If true remove any previous files.
      * @param editExisting If true, edit an existing AVD, changing only the minimum required.
@@ -580,18 +648,22 @@ public class AvdManager {
      * @return The new {@link AvdInfo} in case of success (which has just been added to the
      *         internal list) or null in case of failure.
      */
+    @Nullable
     public AvdInfo createAvd(
-            File avdFolder,
-            String avdName,
-            IAndroidTarget target,
-            String abiType,
-            String skinName,
-            String sdcard,
-            Map<String,String> hardwareConfig,
+            @NonNull  File avdFolder,
+            @NonNull  String avdName,
+            @NonNull  IAndroidTarget target,
+            @NonNull  IdDisplay tag,
+            @NonNull  String abiType,
+            @Nullable File skinFolder,
+            @Nullable String skinName,
+            @Nullable String sdcard,
+            @Nullable Map<String,String> hardwareConfig,
+            @Nullable Map<String,String> bootProps,
             boolean createSnapshot,
             boolean removePrevious,
             boolean editExisting,
-            ILogger log) {
+            @NonNull ILogger log) {
         if (log == null) {
             throw new IllegalArgumentException("log cannot be null");
         }
@@ -632,7 +704,7 @@ public class AvdManager {
 
             // Look for a system image in the add-on.
             // If we don't find one there, look in the base platform.
-            ISystemImage systemImage = target.getSystemImage(abiType);
+            ISystemImage systemImage = target.getSystemImage(tag, abiType);
 
             if (systemImage != null) {
                 File imageFolder = systemImage.getLocation();
@@ -642,7 +714,7 @@ public class AvdManager {
             if ((userdataSrc == null || !userdataSrc.exists()) && !target.isPlatform()) {
                 // If we don't find a system-image in the add-on, look into the platform.
 
-                systemImage = target.getParent().getSystemImage(abiType);
+                systemImage = target.getParent().getSystemImage(tag, abiType);
                 if (systemImage != null) {
                     File imageFolder = systemImage.getLocation();
                     userdataSrc = new File(imageFolder, USERDATA_IMG);
@@ -672,7 +744,7 @@ public class AvdManager {
             // Config file.
             HashMap<String, String> values = new HashMap<String, String>();
 
-           if (setImagePathProperties(target, abiType, values, log) == false) {
+           if (setImagePathProperties(target, tag, abiType, values, log) == false) {
                log.error(null, "Failed to set image path properties in the AVD folder.");
                needCleanup = true;
                return null;
@@ -685,8 +757,8 @@ public class AvdManager {
                     log.info("Snapshot image already present, was not changed.\n");
 
                 } else {
-                    String toolsLib = mSdkManager.getLocation() + File.separator
-                                      + SdkConstants.OS_SDK_TOOLS_LIB_EMULATOR_FOLDER;
+                    File toolsLib = new File(myLocalSdk.getLocation(),
+                                             SdkConstants.OS_SDK_TOOLS_LIB_EMULATOR_FOLDER);
                     File snapshotBlank = new File(toolsLib, SNAPSHOTS_IMG);
                     if (snapshotBlank.exists() == false) {
                         log.error(null,
@@ -701,19 +773,20 @@ public class AvdManager {
                 values.put(AVD_INI_SNAPSHOT_PRESENT, "true");
             }
 
-            // Now the abi type
-            values.put(AVD_INI_ABI_TYPE, abiType);
+            // Now the tag & abi type
+            values.put(AVD_INI_TAG_ID,      tag.getId());
+            values.put(AVD_INI_TAG_DISPLAY, tag.getDisplay());
+            values.put(AVD_INI_ABI_TYPE,    abiType);
 
             // and the cpu arch.
-            if (SdkConstants.ABI_ARMEABI.equals(abiType)) {
-                values.put(AVD_INI_CPU_ARCH, SdkConstants.CPU_ARCH_ARM);
-            } else if (SdkConstants.ABI_ARMEABI_V7A.equals(abiType)) {
-                values.put(AVD_INI_CPU_ARCH, SdkConstants.CPU_ARCH_ARM);
-                values.put(AVD_INI_CPU_MODEL, SdkConstants.CPU_MODEL_CORTEX_A8);
-            } else if (SdkConstants.ABI_INTEL_ATOM.equals(abiType)) {
-                values.put(AVD_INI_CPU_ARCH, SdkConstants.CPU_ARCH_INTEL_ATOM);
-            } else if (SdkConstants.ABI_MIPS.equals(abiType)) {
-                values.put(AVD_INI_CPU_ARCH, SdkConstants.CPU_ARCH_MIPS);
+            Abi abi = Abi.getEnum(abiType);
+            if (abi != null) {
+                values.put(AVD_INI_CPU_ARCH, abi.getCpuArch());
+
+                String model = abi.getCpuModel();
+                if (model != null) {
+                    values.put(AVD_INI_CPU_MODEL, model);
+                }
             } else {
                 log.error(null,
                         "ABI %1$s is not supported by this version of the SDK Tools", abiType);
@@ -722,28 +795,46 @@ public class AvdManager {
             }
 
             // Now the skin.
-            if (skinName == null || skinName.length() == 0) {
-                skinName = target.getDefaultSkin();
+            String skinPath = null;
+
+            if (skinFolder == null && skinName == null) {
+                // Nothing specified. Use the default from the target.
+                skinFolder = target.getDefaultSkin();
             }
 
-            if (NUMERIC_SKIN_SIZE.matcher(skinName).matches()) {
-                // Skin name is an actual screen resolution.
-                // Set skin.name for display purposes in the AVD manager and
-                // set skin.path for use by the emulator.
-                values.put(AVD_INI_SKIN_NAME, skinName);
-                values.put(AVD_INI_SKIN_PATH, skinName);
-            } else {
-                // get the path of the skin (relative to the SDK)
-                // assume skin name is valid
-                String skinPath = getSkinRelativePath(skinName, target, log);
-                if (skinPath == null) {
-                    log.error(null, "Missing skinpath in the AVD folder.");
-                    needCleanup = true;
+            if (skinFolder == null && skinName != null &&
+                    NUMERIC_SKIN_SIZE.matcher(skinName).matches()) {
+                // Numeric skin size. Set both skinPath and skinName to the same size.
+                skinPath = skinName;
+
+            } else if (skinFolder != null && skinName == null) {
+                // Skin folder is specified, but not skin name. Adjust it.
+                skinName = skinFolder.getName();
+
+            } else if (skinFolder == null && skinName != null) {
+                // skin folder is not specified, but there's a non-numeric skin name.
+                // check whether the skin is in the target.
+                skinFolder = getSkinFolder(skinName, target);
+            }
+
+            if (skinFolder != null) {
+                // skin does not exist!
+                if (!skinFolder.exists()) {
+                    log.error(null, "Skin '%1$s' does not exist.", skinName);
                     return null;
                 }
 
-                values.put(AVD_INI_SKIN_PATH, skinPath);
+                // skinPath is the skin folder path relative to the SDK directory
+                skinPath = FileOp.makeRelative(myLocalSdk.getLocation(), skinFolder);
+            }
+
+            // Set skin.name for display purposes in the AVD manager and
+            // set skin.path for use by the emulator.
+            if (skinName != null) {
                 values.put(AVD_INI_SKIN_NAME, skinName);
+            }
+            if (skinPath != null) {
+                values.put(AVD_INI_SKIN_PATH, skinPath);
             }
 
             if (sdcard != null && sdcard.length() > 0) {
@@ -792,7 +883,7 @@ public class AvdManager {
                         String path = sdcardFile.getAbsolutePath();
 
                         // execute mksdcard with the proper parameters.
-                        File toolsFolder = new File(mSdkManager.getLocation(),
+                        File toolsFolder = new File(myLocalSdk.getLocation(),
                                 SdkConstants.FD_TOOLS);
                         File mkSdCard = new File(toolsFolder, SdkConstants.mkSdCardCmdName());
 
@@ -822,12 +913,25 @@ public class AvdManager {
             // - values provided by the user
             // - values provided by the skin
             // - values provided by the target (add-on only).
+            // - values provided by the sys img
             // In order to follow this priority, we'll add the lowest priority values first and then
             // override by higher priority values.
             // In the case of a platform with override values from the user, the skin value might
             // already be there, but it's ok.
 
             HashMap<String, String> finalHardwareValues = new HashMap<String, String>();
+
+            FileWrapper sysImgHardwareFile = new FileWrapper(systemImage.getLocation(),
+                    AvdManager.HARDWARE_INI);
+            if (sysImgHardwareFile.isFile()) {
+                Map<String, String> targetHardwareConfig = ProjectProperties.parsePropertyFile(
+                        sysImgHardwareFile, log);
+
+                if (targetHardwareConfig != null) {
+                    finalHardwareValues.putAll(targetHardwareConfig);
+                    values.putAll(targetHardwareConfig);
+                }
+            }
 
             FileWrapper targetHardwareFile = new FileWrapper(target.getLocation(),
                     AvdManager.HARDWARE_INI);
@@ -842,15 +946,16 @@ public class AvdManager {
             }
 
             // get the hardware properties for this skin
-            File skinFolder = getSkinPath(skinName, target);
-            FileWrapper skinHardwareFile = new FileWrapper(skinFolder, AvdManager.HARDWARE_INI);
-            if (skinHardwareFile.isFile()) {
-                Map<String, String> skinHardwareConfig = ProjectProperties.parsePropertyFile(
-                        skinHardwareFile, log);
+            if (skinFolder != null) {
+                FileWrapper skinHardwareFile = new FileWrapper(skinFolder, AvdManager.HARDWARE_INI);
+                if (skinHardwareFile.isFile()) {
+                    Map<String, String> skinHardwareConfig =
+                        ProjectProperties.parsePropertyFile(skinHardwareFile, log);
 
-                if (skinHardwareConfig != null) {
-                    finalHardwareValues.putAll(skinHardwareConfig);
-                    values.putAll(skinHardwareConfig);
+                    if (skinHardwareConfig != null) {
+                        finalHardwareValues.putAll(skinHardwareConfig);
+                        values.putAll(skinHardwareConfig);
+                    }
                 }
             }
 
@@ -861,7 +966,12 @@ public class AvdManager {
             }
 
             File configIniFile = new File(avdFolder, CONFIG_INI);
-            writeIniFile(configIniFile, values);
+            writeIniFile(configIniFile, values, true);
+
+            if (bootProps != null && !bootProps.isEmpty()) {
+                File bootPropsFile = new File(avdFolder, BOOT_PROP);
+                writeIniFile(bootPropsFile, bootProps, false);
+            }
 
             // Generate the log report first because we want to control where line breaks
             // are located when generating the hardware config list.
@@ -884,13 +994,16 @@ public class AvdManager {
                             target.getName(), target.getVendor()));
                 }
             }
-            report.append(String.format(", %s processor", AvdInfo.getPrettyAbiType(abiType)));
+            report.append(String.format(", %s processor", AvdInfo.getPrettyAbiType(tag, abiType)));
 
             // display the chosen hardware config
             if (finalHardwareValues.size() > 0) {
                 report.append(",\nwith the following hardware config:\n");
-                for (Entry<String, String> entry : finalHardwareValues.entrySet()) {
-                    report.append(String.format("%s=%s\n",entry.getKey(), entry.getValue()));
+                List<String> keys = new ArrayList<String>(finalHardwareValues.keySet());
+                Collections.sort(keys);
+                for (String key : keys) {
+                    String value = finalHardwareValues.get(key);
+                    report.append(String.format("%s=%s\n", key, value));
                 }
             } else {
                 report.append("\n");
@@ -904,7 +1017,9 @@ public class AvdManager {
                     iniFile,
                     avdFolder.getAbsolutePath(),
                     target.hashString(),
-                    target, abiType, values);
+                    target,
+                    tag, abiType,
+                    values);
 
             AvdInfo oldAvdInfo = getAvd(avdName, false /*validAvdOnly*/);
 
@@ -963,7 +1078,7 @@ public class AvdManager {
      * @throws FileNotFoundException
      * @throws IOException
      */
-    private void copyImageFile(File source, File destination)
+    private void copyImageFile(@NonNull File source, @NonNull File destination)
             throws FileNotFoundException, IOException {
         FileInputStream fis = new FileInputStream(source);
         FileOutputStream fos = new FileOutputStream(destination);
@@ -983,10 +1098,12 @@ public class AvdManager {
      * is not empty. If the image folder is empty or does not exist, <code>null</code> is returned.
      * @throws InvalidTargetPathException if the target image folder is not in the current SDK.
      */
-    private String getImageRelativePath(IAndroidTarget target, String abiType)
+    private String getImageRelativePath(@NonNull IAndroidTarget target,
+                                        @NonNull IdDisplay tag,
+                                        @NonNull String abiType)
             throws InvalidTargetPathException {
 
-        ISystemImage systemImage = target.getSystemImage(abiType);
+        ISystemImage systemImage = target.getSystemImage(tag, abiType);
         if (systemImage == null) {
             // ABI Type is unknown for target
             return null;
@@ -996,7 +1113,7 @@ public class AvdManager {
         String imageFullPath = folder.getAbsolutePath();
 
         // make this path relative to the SDK location
-        String sdkLocation = mSdkManager.getLocation();
+        String sdkLocation = myLocalSdk.getPath();
         if (!imageFullPath.startsWith(sdkLocation)) {
             // this really really should not happen.
             assert false;
@@ -1037,13 +1154,16 @@ public class AvdManager {
      * @param target The target where to find the skin.
      * @param log the log object to receive action logs. Cannot be null.
      */
-    public String getSkinRelativePath(String skinName, IAndroidTarget target, ILogger log) {
+    @Deprecated
+    private String getSkinRelativePath(@NonNull String skinName,
+                                       @NonNull IAndroidTarget target,
+                                       @NonNull ILogger log) {
         if (log == null) {
             throw new IllegalArgumentException("log cannot be null");
         }
 
         // first look to see if the skin is in the target
-        File skin = getSkinPath(skinName, target);
+        File skin = getSkinFolder(skinName, target);
 
         // skin really does not exist!
         if (skin.exists() == false) {
@@ -1055,7 +1175,8 @@ public class AvdManager {
         String path = skin.getAbsolutePath();
 
         // make this path relative to the SDK location
-        String sdkLocation = mSdkManager.getLocation();
+
+        String sdkLocation = myLocalSdk.getPath();
         if (path.startsWith(sdkLocation) == false) {
             // this really really should not happen.
             log.error(null, "Target location is not inside the SDK.");
@@ -1076,7 +1197,7 @@ public class AvdManager {
      * @param target The target where to find the skin.
      * @return a {@link File} that may or may not actually exist.
      */
-    public File getSkinPath(String skinName, IAndroidTarget target) {
+    private File getSkinFolder(@NonNull String skinName, @NonNull IAndroidTarget target) {
         String path = target.getPath(IAndroidTarget.SKINS);
         File skin = new File(path, skinName);
 
@@ -1100,9 +1221,9 @@ public class AvdManager {
      * @throws AndroidLocationException if there's a problem getting android root directory.
      * @throws IOException if {@link File#getAbsolutePath()} fails.
      */
-    private File createAvdIniFile(String name,
-            File avdFolder,
-            IAndroidTarget target,
+    private File createAvdIniFile(@NonNull String name,
+            @NonNull File avdFolder,
+            @NonNull IAndroidTarget target,
             boolean removePrevious)
             throws AndroidLocationException, IOException {
         File iniFile = AvdInfo.getDefaultIniFile(this, name);
@@ -1131,7 +1252,7 @@ public class AvdManager {
         }
         values.put(AVD_INFO_ABS_PATH, absPath);
         values.put(AVD_INFO_TARGET, target.hashString());
-        writeIniFile(iniFile, values);
+        writeIniFile(iniFile, values, true);
 
         return iniFile;
     }
@@ -1143,7 +1264,8 @@ public class AvdManager {
      * @throws AndroidLocationException if there's a problem getting android root directory.
      * @throws IOException if {@link File#getAbsolutePath()} fails.
      */
-    private File createAvdIniFile(AvdInfo info) throws AndroidLocationException, IOException {
+    private File createAvdIniFile(@NonNull AvdInfo info)
+            throws AndroidLocationException, IOException {
         return createAvdIniFile(info.getName(),
                 new File(info.getDataFolderPath()),
                 info.getTarget(),
@@ -1165,7 +1287,7 @@ public class AvdManager {
      * @param log the log object to receive action logs. Cannot be null.
      * @return True if the AVD was deleted with no error.
      */
-    public boolean deleteAvd(AvdInfo avdInfo, ILogger log) {
+    public boolean deleteAvd(@NonNull AvdInfo avdInfo, @NonNull ILogger log) {
         try {
             boolean error = false;
 
@@ -1222,7 +1344,10 @@ public class AvdManager {
      * @return True if the move succeeded or there was nothing to do.
      *         If false, this method will have had already output error in the log.
      */
-    public boolean moveAvd(AvdInfo avdInfo, String newName, String paramFolderPath, ILogger log) {
+    public boolean moveAvd(@NonNull  AvdInfo avdInfo,
+                           @Nullable String newName,
+                           @Nullable String paramFolderPath,
+                           @NonNull  ILogger log) {
 
         try {
             if (paramFolderPath != null) {
@@ -1243,6 +1368,7 @@ public class AvdManager {
                         paramFolderPath,
                         avdInfo.getTargetHash(),
                         avdInfo.getTarget(),
+                        avdInfo.getTag(),
                         avdInfo.getAbiType(),
                         avdInfo.getProperties());
                 replaceAvd(avdInfo, info);
@@ -1269,6 +1395,7 @@ public class AvdManager {
                         avdInfo.getDataFolderPath(),
                         avdInfo.getTargetHash(),
                         avdInfo.getTarget(),
+                        avdInfo.getTag(),
                         avdInfo.getAbiType(),
                         avdInfo.getProperties());
                 replaceAvd(avdInfo, info);
@@ -1364,7 +1491,7 @@ public class AvdManager {
         if (avds != null) {
             for (File avd : avds) {
                 AvdInfo info = parseAvdInfo(avd, log);
-                if (info != null) {
+                if (info != null && !allList.contains(info)) {
                     allList.add(info);
                 }
             }
@@ -1406,7 +1533,7 @@ public class AvdManager {
         Map<String, String> properties = null;
 
         if (targetHash != null) {
-            target = mSdkManager.getTargetFromHashString(targetHash);
+            target = myLocalSdk.getTargetFromHashString(targetHash);
         }
 
         // load the AVD properties.
@@ -1429,6 +1556,17 @@ public class AvdManager {
             name = matcher.group(1);
         }
 
+        // get tag
+        IdDisplay tag = SystemImage.DEFAULT_TAG;
+        String tagId   = properties == null ? null : properties.get(AVD_INI_TAG_ID);
+        if (tagId != null) {
+            String tagDisp = properties == null ? null : properties.get(AVD_INI_TAG_DISPLAY);
+            if (tagDisp == null || tagDisp.isEmpty()) {
+                tagDisp = LocalSysImgPkgInfo.tagIdToDisplay(tagId);
+            }
+            tag = new IdDisplay(tagId, tagDisp);
+        }
+
         // get abi type
         String abiType = properties == null ? null : properties.get(AVD_INI_ABI_TYPE);
         // for the avds created previously without enhancement, i.e. They are created based
@@ -1442,13 +1580,13 @@ public class AvdManager {
         if (properties != null) {
             String imageSysDir = properties.get(AVD_INI_IMAGES_1);
             if (imageSysDir != null) {
-                File f = new File(mSdkManager.getLocation() + File.separator + imageSysDir);
+                File f = new File(myLocalSdk.getLocation(), imageSysDir);
                 if (f.isDirectory() == false) {
                     validImageSysdir = false;
                 } else {
                     imageSysDir = properties.get(AVD_INI_IMAGES_2);
                     if (imageSysDir != null) {
-                        f = new File(mSdkManager.getLocation() + File.separator + imageSysDir);
+                        f = new File(myLocalSdk.getLocation(), imageSysDir);
                         if (f.isDirectory() == false) {
                             validImageSysdir = false;
                         }
@@ -1459,14 +1597,36 @@ public class AvdManager {
 
         // Get the device status if this AVD is associated with a device
         DeviceStatus deviceStatus = null;
+        boolean updateHashV2 = false;
         if (properties != null) {
             String deviceName = properties.get(AVD_INI_DEVICE_NAME);
             String deviceMfctr = properties.get(AVD_INI_DEVICE_MANUFACTURER);
-            String hash = properties.get(AVD_INI_DEVICE_HASH);
-            if (deviceName != null && deviceMfctr != null && hash != null) {
-                int deviceHash = Integer.parseInt(hash);
-                DeviceManager devMan = DeviceManager.createInstance(mSdkManager.getLocation(), log);
-                deviceStatus = devMan.getDeviceStatus(deviceName, deviceMfctr, deviceHash);
+
+            Device d = null;
+
+            if (deviceName != null && deviceMfctr != null) {
+                DeviceManager devMan = DeviceManager.createInstance(myLocalSdk.getLocation(), log);
+                d = devMan.getDevice(deviceName, deviceMfctr);
+                deviceStatus = d == null ? DeviceStatus.MISSING : DeviceStatus.EXISTS;
+
+                if (d != null) {
+                    updateHashV2 = true;
+                    String hashV2 = properties.get(AVD_INI_DEVICE_HASH_V2);
+                    if (hashV2 != null) {
+                        String newHashV2 = DeviceManager.hasHardwarePropHashChanged(d, hashV2);
+                        if (newHashV2 == null) {
+                            updateHashV2 = false;
+                        } else {
+                            properties.put(AVD_INI_DEVICE_HASH_V2, newHashV2);
+                        }
+                    }
+
+                    String hashV1 = properties.get(AVD_INI_DEVICE_HASH_V1);
+                    if (hashV1 != null) {
+                        // will recompute a hash v2 and save it below
+                        properties.remove(AVD_INI_DEVICE_HASH_V1);
+                    }
+                }
             }
         }
 
@@ -1501,34 +1661,52 @@ public class AvdManager {
                 avdPath,
                 targetHash,
                 target,
+                tag,
                 abiType,
                 properties,
                 status);
+
+        if (updateHashV2) {
+            try {
+                return updateDeviceChanged(info, log);
+            } catch (IOException ignore) {}
+        }
 
         return info;
     }
 
     /**
      * Writes a .ini file from a set of properties, using UTF-8 encoding.
+     * The keys are sorted.
      * The file should be read back later by {@link #parseIniFile(IAbstractFile, ILogger)}.
      *
      * @param iniFile The file to generate.
-     * @param values THe properties to place in the ini file.
+     * @param values The properties to place in the ini file.
+     * @param addEncoding When true, add a property {@link #AVD_INI_ENCODING} indicating the
+     *                    encoding used to write the file.
      * @throws IOException if {@link FileWriter} fails to open, write or close the file.
      */
-    private static void writeIniFile(File iniFile, Map<String, String> values)
+    private static void writeIniFile(File iniFile, Map<String, String> values, boolean addEncoding)
             throws IOException {
 
-        Charset charset = Charsets.ISO_8859_1;
+        Charset charset = Charsets.UTF_8;
         OutputStreamWriter writer = new OutputStreamWriter(new FileOutputStream(iniFile), charset);
+        try {
+            if (addEncoding) {
+                // Write down the charset used in case we want to use it later.
+                writer.write(String.format("%1$s=%2$s\n", AVD_INI_ENCODING, charset.name()));
+            }
 
-        // Write down the charset used in case we want to use it later.
-        writer.write(String.format("%1$s=%2$s\n", AVD_INI_ENCODING, charset.name()));
+            ArrayList<String> keys = new ArrayList<String>(values.keySet());
+            Collections.sort(keys);
 
-        for (Entry<String, String> entry : values.entrySet()) {
-            writer.write(String.format("%1$s=%2$s\n", entry.getKey(), entry.getValue()));
+            for (String key : keys) {
+                String value = values.get(key);
+                writer.write(String.format("%1$s=%2$s\n", key, value));
+            }
+        } finally {
+            writer.close();
         }
-        writer.close();
     }
 
     /**
@@ -1570,7 +1748,7 @@ public class AvdManager {
         try {
             boolean canChangeCharset = false;
             if (charset == null) {
-                canChangeCharset = false;
+                canChangeCharset = true;
                 charset = Charsets.ISO_8859_1;
             }
             reader = new BufferedReader(new InputStreamReader(propFile.getContents(), charset));
@@ -1627,7 +1805,11 @@ public class AvdManager {
                         e.getMessage());
             }
         } finally {
-            Closeables.closeQuietly(reader);
+            try {
+                Closeables.close(reader, true /* swallowIOException */);
+            } catch (IOException e) {
+                // cannot happen.
+            }
         }
 
         return null;
@@ -1642,7 +1824,8 @@ public class AvdManager {
      * @param log the log object to receive action logs. Cannot be null.
      * @return True if the sdcard could be created.
      */
-    private boolean createSdCard(String toolLocation, String size, String location, ILogger log) {
+    @VisibleForTesting(visibility=Visibility.PRIVATE)
+    protected boolean createSdCard(String toolLocation, String size, String location, ILogger log) {
         try {
             String[] command = new String[3];
             command[0] = toolLocation;
@@ -1741,7 +1924,7 @@ public class AvdManager {
      * @param log the log object to receive action logs. Cannot be null.
      * @throws IOException
      */
-    public void updateAvd(AvdInfo avd, ILogger log) throws IOException {
+    public AvdInfo updateAvd(AvdInfo avd, ILogger log) throws IOException {
         // get the properties. This is a unmodifiable Map.
         Map<String, String> oldProperties = avd.getProperties();
 
@@ -1754,7 +1937,11 @@ public class AvdManager {
         AvdStatus status;
 
         // create the path to the new system images.
-        if (setImagePathProperties(avd.getTarget(), avd.getAbiType(), properties, log)) {
+        if (setImagePathProperties(avd.getTarget(),
+                                   avd.getTag(),
+                                   avd.getAbiType(),
+                                   properties,
+                                   log)) {
             if (properties.containsKey(AVD_INI_IMAGES_1)) {
                 log.info("Updated '%1$s' with value '%2$s'\n", AVD_INI_IMAGES_1,
                         properties.get(AVD_INI_IMAGES_1));
@@ -1772,16 +1959,17 @@ public class AvdManager {
             //FIXME: display paths to empty image folders?
             status = AvdStatus.ERROR_IMAGE_DIR;
         }
-        updateAvd(avd, properties, status, log);
+
+        return updateAvd(avd, properties, status, log);
     }
 
-    public void updateAvd(AvdInfo avd,
+    public AvdInfo updateAvd(AvdInfo avd,
             Map<String, String> newProperties,
             AvdStatus status,
             ILogger log) throws IOException {
         // now write the config file
         File configIniFile = new File(avd.getDataFolderPath(), CONFIG_INI);
-        writeIniFile(configIniFile, newProperties);
+        writeIniFile(configIniFile, newProperties, true);
 
         // finally create a new AvdInfo for this unbroken avd and add it to the list.
         // instead of creating the AvdInfo object directly we reparse it, to detect other possible
@@ -1793,10 +1981,47 @@ public class AvdManager {
                 avd.getDataFolderPath(),
                 avd.getTargetHash(),
                 avd.getTarget(),
+                avd.getTag(),
                 avd.getAbiType(),
                 newProperties);
 
         replaceAvd(avd, newAvd);
+
+        return newAvd;
+    }
+
+    /**
+     * Updates the device-specific part of an AVD ini.
+     * @param avd the AVD to update.
+     * @param log the log object to receive action logs. Cannot be null.
+     * @return The new AVD on success.
+     * @throws IOException
+     */
+    public AvdInfo updateDeviceChanged(AvdInfo avd, ILogger log) throws IOException {
+
+        // Overwrite the properties derived from the device and nothing else
+        Map<String, String> properties = new HashMap<String, String>(avd.getProperties());
+
+        DeviceManager devMan = DeviceManager.createInstance(myLocalSdk.getLocation(), log);
+        Collection<Device> devices = devMan.getDevices(DeviceManager.ALL_DEVICES);
+        String name = properties.get(AvdManager.AVD_INI_DEVICE_NAME);
+        String manufacturer = properties.get(AvdManager.AVD_INI_DEVICE_MANUFACTURER);
+
+        if (properties != null && devices != null && name != null && manufacturer != null) {
+            for (Device d : devices) {
+                if (d.getId().equals(name) && d.getManufacturer().equals(manufacturer)) {
+                    properties.putAll(DeviceManager.getHardwareProperties(d));
+                    try {
+                        return updateAvd(avd, properties, AvdStatus.OK, log);
+                    } catch (IOException e) {
+                        log.error(e, null);
+                    }
+                }
+            }
+        } else {
+            log.error(null, "Base device information incomplete or missing.");
+        }
+        return null;
     }
 
     /**
@@ -1810,6 +2035,7 @@ public class AvdManager {
      * @return true if success, false if some path are missing.
      */
     private boolean setImagePathProperties(IAndroidTarget target,
+            IdDisplay tag,
             String abiType,
             Map<String, String> properties,
             ILogger log) {
@@ -1820,7 +2046,7 @@ public class AvdManager {
             String property = AVD_INI_IMAGES_1;
 
             // First the image folders of the target itself
-            String imagePath = getImageRelativePath(target, abiType);
+            String imagePath = getImageRelativePath(target, tag, abiType);
             if (imagePath != null) {
                 properties.put(property, imagePath);
                 property = AVD_INI_IMAGES_2;
@@ -1829,7 +2055,7 @@ public class AvdManager {
             // If the target is an add-on we need to add the Platform image as a backup.
             IAndroidTarget parent = target.getParent();
             if (parent != null) {
-                imagePath = getImageRelativePath(parent, abiType);
+                imagePath = getImageRelativePath(parent, tag, abiType);
                 if (imagePath != null) {
                     properties.put(property, imagePath);
                 }

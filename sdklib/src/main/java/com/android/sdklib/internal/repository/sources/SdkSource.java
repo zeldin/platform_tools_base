@@ -19,6 +19,8 @@ package com.android.sdklib.internal.repository.sources;
 import com.android.annotations.Nullable;
 import com.android.annotations.VisibleForTesting;
 import com.android.annotations.VisibleForTesting.Visibility;
+import com.android.io.NonClosingInputStream;
+import com.android.io.NonClosingInputStream.CloseBehavior;
 import com.android.sdklib.internal.repository.CanceledByUserException;
 import com.android.sdklib.internal.repository.DownloadCache;
 import com.android.sdklib.internal.repository.IDescription;
@@ -34,8 +36,6 @@ import com.android.sdklib.internal.repository.packages.SamplePackage;
 import com.android.sdklib.internal.repository.packages.SourcePackage;
 import com.android.sdklib.internal.repository.packages.SystemImagePackage;
 import com.android.sdklib.internal.repository.packages.ToolPackage;
-import com.android.sdklib.io.NonClosingInputStream;
-import com.android.sdklib.io.NonClosingInputStream.CloseBehavior;
 import com.android.sdklib.repository.RepoConstants;
 import com.android.sdklib.repository.SdkAddonConstants;
 import com.android.sdklib.repository.SdkRepoConstants;
@@ -894,7 +894,7 @@ public abstract class SdkSource implements IDescription, Comparable<SdkSource> {
                     Package p = null;
 
                     try {
-                        // We can load addon and extra packages from all sources, either
+                        // We can load add-on and extra packages from all sources, either
                         // internal or user sources.
                         if (SdkAddonConstants.NODE_ADD_ON.equals(name)) {
                             p = new AddonPackage(this, child, nsUri, licenses);

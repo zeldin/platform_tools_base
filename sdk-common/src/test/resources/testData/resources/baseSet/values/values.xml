@@ -10,7 +10,9 @@
     <color name="color">#00000000</color>
 
     <string name="basic_string">basic_string</string>
-    <string name="xliff_string"><xliff:g id="number" example="123">%1$s</xliff:g><xliff:g id="unit" example="KB">%2$s</xliff:g></string>
+    <string name="xliff_string"><xliff:g id="firstName">%1$s</xliff:g> <xliff:g id="lastName">%2$s</xliff:g></string>
+    <string name="xliff_with_carriage_return">This is should be followed by whitespace:
+        <xliff:g id="firstName">%1$s</xliff:g></string>
     <string name="styled_string">Forgot your username or password\?\nVisit <b>google.com/accounts/recovery</b>.</string>
 
     <style name="style" parent="@android:style/Holo.Light">
@@ -70,6 +72,10 @@
         <attr name="android:colorForegroundInverse" />
         <attr name="blah2" />
 
+        <attr name="flagAttr">
+            <flag name="flag1a" value="0x30" />
+            <flag name="flag1b" value="0x40" />
+        </attr>
     </declare-styleable>
 
     <!-- The width that is used when creating thumbnails of applications. -->
@@ -82,4 +88,7 @@
     <item type="layout" name="layout_ref">@layout/ref</item>
     <item type="layout" name="alias_replaced_by_file">@layout/ref</item>
 
+    <plurals name="plurals">
+        <item quantity="one">test2 <xliff:g xmlns="urn:oasis:names:tc:xliff:document:1.2" id="test3">%s</xliff:g> test4</item>
+    </plurals>
 </resources>

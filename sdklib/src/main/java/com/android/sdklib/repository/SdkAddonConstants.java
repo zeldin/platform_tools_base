@@ -30,7 +30,7 @@ public class SdkAddonConstants extends RepoConstants {
      * The latest version of the sdk-addon XML Schema.
      * Valid version numbers are between 1 and this number, included.
      */
-    public static final int NS_LATEST_VERSION = 6;
+    public static final int NS_LATEST_VERSION = 7;
 
     /**
      * The default name looked for by {@link SdkSource} when trying to load an
@@ -46,7 +46,7 @@ public class SdkAddonConstants extends RepoConstants {
      * The pattern of our sdk-addon XML namespace.
      * Matcher's group(1) is the schema version (integer).
      */
-    public static final String NS_PATTERN = NS_BASE + "([1-9][0-9]*)";     //$NON-NLS-1$
+    public static final String NS_PATTERN = NS_BASE + "([0-9]+)";     //$NON-NLS-1$
 
     /** The XML namespace of the latest sdk-addon XML. */
     public static final String NS_URI = getSchemaUri(NS_LATEST_VERSION);

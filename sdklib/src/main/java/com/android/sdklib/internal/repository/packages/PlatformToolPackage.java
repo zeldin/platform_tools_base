@@ -17,6 +17,7 @@
 package com.android.sdklib.internal.repository.packages;
 
 import com.android.SdkConstants;
+import com.android.annotations.NonNull;
 import com.android.annotations.VisibleForTesting;
 import com.android.annotations.VisibleForTesting.Visibility;
 import com.android.sdklib.SdkManager;
@@ -24,10 +25,10 @@ import com.android.sdklib.internal.repository.AdbWrapper;
 import com.android.sdklib.internal.repository.IDescription;
 import com.android.sdklib.internal.repository.ITaskMonitor;
 import com.android.sdklib.internal.repository.archives.Archive;
-import com.android.sdklib.internal.repository.archives.Archive.Arch;
-import com.android.sdklib.internal.repository.archives.Archive.Os;
 import com.android.sdklib.internal.repository.sources.SdkSource;
 import com.android.sdklib.repository.FullRevision.PreviewComparison;
+import com.android.sdklib.repository.descriptors.IPkgDesc;
+import com.android.sdklib.repository.descriptors.PkgDesc;
 
 import org.w3c.dom.Node;
 
@@ -47,6 +48,8 @@ public class PlatformToolPackage extends FullRevisionPackage {
     /** The value returned by {@link PlatformToolPackage#installId()}. */
     public static final String INSTALL_ID_PREVIEW = "platform-tools-preview";       //$NON-NLS-1$
 
+    private final IPkgDesc mPkgDesc;
+
     /**
      * Creates a new platform-tool package from the attributes and elements of the given XML node.
      * This constructor should throw an exception if the package cannot be created.
@@ -60,6 +63,11 @@ public class PlatformToolPackage extends FullRevisionPackage {
     public PlatformToolPackage(SdkSource source, Node packageNode,
             String nsUri, Map<String,String> licenses) {
         super(source, packageNode, nsUri, licenses);
+
+        mPkgDesc = PkgDesc.Builder
+                .newPlatformTool(getRevision())
+                .setDescriptions(this)
+                .create();
     }
 
     /**
@@ -76,12 +84,10 @@ public class PlatformToolPackage extends FullRevisionPackage {
             String license,
             String description,
             String descUrl,
-            Os archiveOs,
-            Arch archiveArch,
             String archiveOsPath) {
 
         PlatformToolPackage ptp = new PlatformToolPackage(source, props, revision, license,
-                description, descUrl, archiveOs, archiveArch, archiveOsPath);
+                description, descUrl, archiveOsPath);
 
         File platformToolsFolder = new File(archiveOsPath);
         String error = null;
@@ -133,7 +139,10 @@ public class PlatformToolPackage extends FullRevisionPackage {
             BrokenPackage ba = new BrokenPackage(props, shortDesc, longDesc,
                     IMinApiLevelDependency.MIN_API_LEVEL_NOT_SPECIFIED,
                     IExactApiLevelDependency.API_LEVEL_INVALID,
-                    archiveOsPath);
+                    archiveOsPath,
+                    PkgDesc.Builder.newPlatformTool(ptp.getRevision())
+                                   .setDescriptionShort(shortDesc)
+                                   .create());
             return ba;
         }
 
@@ -149,8 +158,6 @@ public class PlatformToolPackage extends FullRevisionPackage {
                 String license,
                 String description,
                 String descUrl,
-                Os archiveOs,
-                Arch archiveArch,
                 String archiveOsPath) {
         super(source,
                 props,
@@ -158,9 +165,18 @@ public class PlatformToolPackage extends FullRevisionPackage {
                 license,
                 description,
                 descUrl,
-                archiveOs,
-                archiveArch,
                 archiveOsPath);
+
+        mPkgDesc = PkgDesc.Builder
+                .newPlatformTool(getRevision())
+                .setDescriptions(this)
+                .create();
+    }
+
+    @Override
+    @NonNull
+    public IPkgDesc getPkgDesc() {
+        return mPkgDesc;
     }
 
     /**
@@ -186,6 +202,11 @@ public class PlatformToolPackage extends FullRevisionPackage {
      */
     @Override
     public String getListDescription() {
+        String ld = getListDisplay();
+        if (!ld.isEmpty()) {
+            return String.format("%1$s%2$s", ld, isObsolete() ? " (Obsolete)" : "");
+        }
+
         return String.format("Android SDK Platform-tools%1$s",
                 isObsolete() ? " (Obsolete)" : "");
     }
@@ -195,6 +216,14 @@ public class PlatformToolPackage extends FullRevisionPackage {
      */
     @Override
     public String getShortDescription() {
+        String ld = getListDisplay();
+        if (!ld.isEmpty()) {
+            return String.format("%1$s, revision %2$s%3$s",
+                    ld,
+                    getRevision().toShortString(),
+                    isObsolete() ? " (Obsolete)" : "");
+        }
+
         return String.format("Android SDK Platform-tools, revision %1$s%2$s",
                 getRevision().toShortString(),
                 isObsolete() ? " (Obsolete)" : "");

@@ -16,29 +16,31 @@
 
 package com.android.tools.lint.client.api;
 
-import static com.android.SdkConstants.ANDROID_MANIFEST_XML;
 import static com.android.SdkConstants.ATTR_IGNORE;
 import static com.android.SdkConstants.CLASS_CONSTRUCTOR;
 import static com.android.SdkConstants.CONSTRUCTOR_NAME;
 import static com.android.SdkConstants.DOT_CLASS;
 import static com.android.SdkConstants.DOT_JAR;
 import static com.android.SdkConstants.DOT_JAVA;
-import static com.android.SdkConstants.DOT_XML;
-import static com.android.SdkConstants.FN_PROJECT_PROGUARD_FILE;
-import static com.android.SdkConstants.OLD_PROGUARD_FILE;
+import static com.android.SdkConstants.FD_GRADLE_WRAPPER;
+import static com.android.SdkConstants.FN_GRADLE_WRAPPER_PROPERTIES;
+import static com.android.SdkConstants.FN_LOCAL_PROPERTIES;
 import static com.android.SdkConstants.RES_FOLDER;
 import static com.android.SdkConstants.SUPPRESS_ALL;
 import static com.android.SdkConstants.SUPPRESS_LINT;
 import static com.android.SdkConstants.TOOLS_URI;
 import static com.android.tools.lint.detector.api.LintUtils.isAnonymousClass;
+import static java.io.File.separator;
 import static org.objectweb.asm.Opcodes.ASM4;
 
-import com.android.SdkConstants;
 import com.android.annotations.NonNull;
 import com.android.annotations.Nullable;
 import com.android.annotations.VisibleForTesting;
+import com.android.ide.common.res2.AbstractResourceRepository;
+import com.android.ide.common.res2.ResourceItem;
 import com.android.resources.ResourceFolderType;
 import com.android.sdklib.IAndroidTarget;
+import com.android.sdklib.repository.local.LocalSdk;
 import com.android.tools.lint.client.api.LintListener.EventType;
 import com.android.tools.lint.detector.api.ClassContext;
 import com.android.tools.lint.detector.api.Context;
@@ -48,12 +50,14 @@ import com.android.tools.lint.detector.api.JavaContext;
 import com.android.tools.lint.detector.api.LintUtils;
 import com.android.tools.lint.detector.api.Location;
 import com.android.tools.lint.detector.api.Project;
+import com.android.tools.lint.detector.api.ResourceContext;
 import com.android.tools.lint.detector.api.ResourceXmlDetector;
 import com.android.tools.lint.detector.api.Scope;
 import com.android.tools.lint.detector.api.Severity;
+import com.android.tools.lint.detector.api.TextFormat;
 import com.android.tools.lint.detector.api.XmlContext;
 import com.google.common.annotations.Beta;
-import com.google.common.base.CharMatcher;
+import com.google.common.base.Objects;
 import com.google.common.base.Splitter;
 import com.google.common.collect.ArrayListMultimap;
 import com.google.common.collect.Lists;
@@ -63,7 +67,6 @@ import com.google.common.collect.Sets;
 import com.google.common.io.ByteStreams;
 import com.google.common.io.Closeables;
 
-import org.objectweb.asm.AnnotationVisitor;
 import org.objectweb.asm.ClassReader;
 import org.objectweb.asm.ClassVisitor;
 import org.objectweb.asm.Opcodes;
@@ -81,6 +84,8 @@ import org.w3c.dom.Element;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.IOException;
+import java.net.URL;
+import java.net.URLConnection;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -93,9 +98,12 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.IdentityHashMap;
 import java.util.Iterator;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
 
@@ -128,6 +136,8 @@ public class LintDriver {
      */
     private static final int MAX_PHASES = 3;
     private static final String SUPPRESS_LINT_VMSIG = '/' + SUPPRESS_LINT + ';';
+    /** Prefix used by the comment suppress mechanism in Studio/IntelliJ */
+    private static final String STUDIO_ID_PREFIX = "AndroidLint";
 
     private final LintClient mClient;
     private LintRequest mRequest;
@@ -170,6 +180,15 @@ public class LintDriver {
     @NonNull
     public EnumSet<Scope> getScope() {
         return mScope;
+    }
+
+    /**
+     * Sets the scope for the lint job
+     *
+     * @param scope the scope to use
+     */
+    public void setScope(@NonNull EnumSet<Scope> scope) {
+        mScope = scope;
     }
 
     /**
@@ -370,6 +389,9 @@ public class LintDriver {
     private void analyze() {
         mCanceled = false;
         mScope = mRequest.getScope();
+        assert mScope == null || !mScope.contains(Scope.ALL_RESOURCE_FILES) ||
+                mScope.contains(Scope.RESOURCE_FILE);
+
         Collection<Project> projects;
         try {
             projects = mRequest.getProjects();
@@ -379,9 +401,10 @@ public class LintDriver {
         } catch (CircularDependencyException e) {
             mCurrentProject = e.getProject();
             if (mCurrentProject != null) {
-                File file = e.getLocation().getFile();
+                Location location = e.getLocation();
+                File file = location != null ? location.getFile() : mCurrentProject.getDir();
                 Context context = new Context(this, mCurrentProject, null, file);
-                context.report(IssueRegistry.LINT_ERROR, e.getLocation(), e.getMessage(), null);
+                context.report(IssueRegistry.LINT_ERROR, e.getLocation(), e.getMessage());
                 mCurrentProject = null;
             }
             return;
@@ -505,6 +528,8 @@ public class LintDriver {
         // Ensure that the current visitor is recomputed
         mCurrentFolderType = null;
         mCurrentVisitor = null;
+        mCurrentXmlDetectors = null;
+        mCurrentBinaryDetectors = null;
 
         // Create map from detector class to issue such that we can
         // compute applicable issues for each detector in the list of detectors
@@ -637,10 +662,31 @@ public class LintDriver {
                 }
             }
 
+            List<Detector> gradleDetectors = mScopeDetectors.get(Scope.GRADLE_FILE);
+            if (gradleDetectors != null) {
+                for (Detector detector : gradleDetectors) {
+                    assert detector instanceof Detector.GradleScanner : detector;
+                }
+            }
+
             List<Detector> otherDetectors = mScopeDetectors.get(Scope.OTHER);
             if (otherDetectors != null) {
                 for (Detector detector : otherDetectors) {
                     assert detector instanceof Detector.OtherFileScanner : detector;
+                }
+            }
+
+            List<Detector> dirDetectors = mScopeDetectors.get(Scope.RESOURCE_FOLDER);
+            if (dirDetectors != null) {
+                for (Detector detector : dirDetectors) {
+                    assert detector instanceof Detector.ResourceFolderScanner : detector;
+                }
+            }
+
+            List<Detector> binaryDetectors = mScopeDetectors.get(Scope.BINARY_RESOURCE_FILE);
+            if (binaryDetectors != null) {
+                for (Detector detector : binaryDetectors) {
+                    assert detector instanceof Detector.BinaryResourceScanner : detector;
                 }
             }
         }
@@ -656,7 +702,7 @@ public class LintDriver {
 
     private Collection<Project> computeProjects(@NonNull List<File> files) {
         // Compute list of projects
-        Map<File, Project> fileToProject = new HashMap<File, Project>();
+        Map<File, Project> fileToProject = new LinkedHashMap<File, Project>();
 
         File sharedRoot = null;
 
@@ -842,7 +888,7 @@ public class LintDriver {
         runFileDetectors(project, project);
 
         if (!Scope.checkSingleFile(mScope)) {
-            List<Project> libraries = project.getDirectLibraries();
+            List<Project> libraries = project.getAllLibraries();
             for (Project library : libraries) {
                 Context libraryContext = new Context(this, library, project, projectDir);
                 fireEvent(EventType.SCANNING_LIBRARY_PROJECT, libraryContext);
@@ -888,7 +934,7 @@ public class LintDriver {
                 IssueRegistry.CANCELLED,
                 Severity.INFORMATIONAL,
                 null /*range*/,
-                "Lint canceled by user", null);
+                "Lint canceled by user", TextFormat.RAW);
         }
 
         mCurrentProjects = null;
@@ -896,64 +942,82 @@ public class LintDriver {
 
     private void runFileDetectors(@NonNull Project project, @Nullable Project main) {
         // Look up manifest information (but not for library projects)
-        for (File manifestFile : project.getManifestFiles()) {
-            XmlContext context = new XmlContext(this, project, main, manifestFile, null);
-            IDomParser parser = mClient.getDomParser();
-            if (parser != null) {
-                context.document = parser.parseXml(context);
-                if (context.document != null) {
-                    try {
-                        project.readManifest(context.document);
+        if (project.isAndroidProject()) {
+            for (File manifestFile : project.getManifestFiles()) {
+                XmlParser parser = mClient.getXmlParser();
+                if (parser != null) {
+                    XmlContext context = new XmlContext(this, project, main, manifestFile, null,
+                            parser);
+                    context.document = parser.parseXml(context);
+                    if (context.document != null) {
+                        try {
+                            project.readManifest(context.document);
 
-                        if ((!project.isLibrary() || (main != null && main.isMergingManifests()))
-                                && mScope.contains(Scope.MANIFEST)) {
-                            List<Detector> detectors = mScopeDetectors.get(Scope.MANIFEST);
-                            if (detectors != null) {
-                                XmlVisitor v = new XmlVisitor(parser, detectors);
-                                fireEvent(EventType.SCANNING_FILE, context);
-                                v.visitFile(context, manifestFile);
+                            if ((!project.isLibrary() || (main != null
+                                    && main.isMergingManifests()))
+                                    && mScope.contains(Scope.MANIFEST)) {
+                                List<Detector> detectors = mScopeDetectors.get(Scope.MANIFEST);
+                                if (detectors != null) {
+                                    ResourceVisitor v = new ResourceVisitor(parser, detectors,
+                                            null);
+                                    fireEvent(EventType.SCANNING_FILE, context);
+                                    v.visitFile(context, manifestFile);
+                                }
                             }
+                        } finally {
+                          if (context.document != null) { // else: freed by XmlVisitor above
+                              parser.dispose(context, context.document);
+                          }
                         }
-                    } finally {
-                      if (context.document != null) { // else: freed by XmlVisitor above
-                          parser.dispose(context, context.document);
-                      }
                     }
                 }
             }
-        }
 
-        // Process both Scope.RESOURCE_FILE and Scope.ALL_RESOURCE_FILES detectors together
-        // in a single pass through the resource directories.
-        if (mScope.contains(Scope.ALL_RESOURCE_FILES) || mScope.contains(Scope.RESOURCE_FILE)) {
-            List<Detector> checks = union(mScopeDetectors.get(Scope.RESOURCE_FILE),
-                    mScopeDetectors.get(Scope.ALL_RESOURCE_FILES));
-            if (checks != null && !checks.isEmpty()) {
-                List<ResourceXmlDetector> xmlDetectors =
-                        new ArrayList<ResourceXmlDetector>(checks.size());
-                for (Detector detector : checks) {
-                    if (detector instanceof ResourceXmlDetector) {
-                        xmlDetectors.add((ResourceXmlDetector) detector);
+            // Process both Scope.RESOURCE_FILE and Scope.ALL_RESOURCE_FILES detectors together
+            // in a single pass through the resource directories.
+            if (mScope.contains(Scope.ALL_RESOURCE_FILES)
+                    || mScope.contains(Scope.RESOURCE_FILE)
+                    || mScope.contains(Scope.RESOURCE_FOLDER)
+                    || mScope.contains(Scope.BINARY_RESOURCE_FILE)) {
+                List<Detector> dirChecks = mScopeDetectors.get(Scope.RESOURCE_FOLDER);
+                List<Detector> binaryChecks = mScopeDetectors.get(Scope.BINARY_RESOURCE_FILE);
+                List<Detector> checks = union(mScopeDetectors.get(Scope.RESOURCE_FILE),
+                        mScopeDetectors.get(Scope.ALL_RESOURCE_FILES));
+                boolean haveXmlChecks = checks != null && !checks.isEmpty();
+                List<ResourceXmlDetector> xmlDetectors;
+                if (haveXmlChecks) {
+                    xmlDetectors = new ArrayList<ResourceXmlDetector>(checks.size());
+                    for (Detector detector : checks) {
+                        if (detector instanceof ResourceXmlDetector) {
+                            xmlDetectors.add((ResourceXmlDetector) detector);
+                        }
                     }
+                    haveXmlChecks = !xmlDetectors.isEmpty();
+                } else {
+                    xmlDetectors = Collections.emptyList();
                 }
-                if (!xmlDetectors.isEmpty()) {
+                if (haveXmlChecks
+                        || dirChecks != null && !dirChecks.isEmpty()
+                        || binaryChecks != null && !binaryChecks.isEmpty()) {
                     List<File> files = project.getSubset();
                     if (files != null) {
-                        checkIndividualResources(project, main, xmlDetectors, files);
+                        checkIndividualResources(project, main, xmlDetectors, dirChecks,
+                                binaryChecks, files);
                     } else {
                         List<File> resourceFolders = project.getResourceFolders();
-                        if (!resourceFolders.isEmpty() && !xmlDetectors.isEmpty()) {
+                        if (!resourceFolders.isEmpty()) {
                             for (File res : resourceFolders) {
-                                checkResFolder(project, main, res, xmlDetectors);
+                                checkResFolder(project, main, res, xmlDetectors, dirChecks,
+                                        binaryChecks);
                             }
                         }
                     }
                 }
             }
-        }
 
-        if (mCanceled) {
-            return;
+            if (mCanceled) {
+                return;
+            }
         }
 
         if (mScope.contains(Scope.JAVA_FILE) || mScope.contains(Scope.ALL_JAVA_FILES)) {
@@ -980,6 +1044,18 @@ public class LintDriver {
             checkClasses(project, main);
         }
 
+        if (mCanceled) {
+            return;
+        }
+
+        if (mScope.contains(Scope.GRADLE_FILE)) {
+            checkBuildScripts(project, main);
+        }
+
+        if (mCanceled) {
+            return;
+        }
+
         if (mScope.contains(Scope.OTHER)) {
             List<Detector> checks = mScopeDetectors.get(Scope.OTHER);
             if (checks != null) {
@@ -992,8 +1068,34 @@ public class LintDriver {
             return;
         }
 
-        if (project == main && mScope.contains(Scope.PROGUARD_FILE)) {
+        if (project == main && mScope.contains(Scope.PROGUARD_FILE) &&
+                project.isAndroidProject()) {
             checkProGuard(project, main);
+        }
+
+        if (project == main && mScope.contains(Scope.PROPERTY_FILE)) {
+            checkProperties(project, main);
+        }
+    }
+
+    private void checkBuildScripts(Project project, Project main) {
+        List<Detector> detectors = mScopeDetectors.get(Scope.GRADLE_FILE);
+        if (detectors != null) {
+            List<File> files = project.getSubset();
+            if (files == null) {
+                files = project.getGradleBuildScripts();
+            }
+            for (File file : files) {
+                Context context = new Context(this, project, main, file);
+                fireEvent(EventType.SCANNING_FILE, context);
+                for (Detector detector : detectors) {
+                    if (detector.appliesTo(context, file)) {
+                        detector.beforeCheckFile(context);
+                        detector.visitBuildScript(context, Maps.<String, Object>newHashMap());
+                        detector.afterCheckFile(context);
+                    }
+                }
+            }
         }
     }
 
@@ -1010,6 +1112,31 @@ public class LintDriver {
                         detector.run(context);
                         detector.afterCheckFile(context);
                     }
+                }
+            }
+        }
+    }
+
+    private void checkProperties(Project project, Project main) {
+        List<Detector> detectors = mScopeDetectors.get(Scope.PROPERTY_FILE);
+        if (detectors != null) {
+            checkPropertyFile(project, main, detectors, FN_LOCAL_PROPERTIES);
+            checkPropertyFile(project, main, detectors, FD_GRADLE_WRAPPER + separator +
+                    FN_GRADLE_WRAPPER_PROPERTIES);
+        }
+    }
+
+    private void checkPropertyFile(Project project, Project main, List<Detector> detectors,
+            String relativePath) {
+        File file = new File(project.getDir(), relativePath);
+        if (file.exists()) {
+            Context context = new Context(this, project, main, file);
+            fireEvent(EventType.SCANNING_FILE, context);
+            for (Detector detector : detectors) {
+                if (detector.appliesTo(context, file)) {
+                    detector.beforeCheckFile(context);
+                    detector.run(context);
+                    detector.afterCheckFile(context);
                 }
             }
         }
@@ -1075,7 +1202,7 @@ public class LintDriver {
         if (mCurrentProject != null) {
             Boolean isSub = mClient.isSubclassOf(mCurrentProject, classNode.name, superClassName);
             if (isSub != null) {
-                return isSub.booleanValue();
+                return isSub;
             }
         }
 
@@ -1102,12 +1229,8 @@ public class LintDriver {
             // e.g. the DuplicateIdDetector registers both a cross-resource issue and a
             // single-file issue, so it shows up on both scope lists:
             Set<Detector> set = new HashSet<Detector>(list1.size() + list2.size());
-            if (list1 != null) {
-                set.addAll(list1);
-            }
-            if (list2 != null) {
-                set.addAll(list2);
-            }
+            set.addAll(list1);
+            set.addAll(list2);
 
             return new ArrayList<Detector>(set);
         }
@@ -1138,14 +1261,14 @@ public class LintDriver {
         List<File> classFolders = project.getJavaClassFolders();
         List<ClassEntry> classEntries;
         if (classFolders.isEmpty()) {
-            String message = String.format("No .class files were found in project \"%1$s\", "
+            String message = String.format("No `.class` files were found in project \"%1$s\", "
                     + "so none of the classfile based checks could be run. "
                     + "Does the project need to be built first?", project.getName());
             Location location = Location.create(project.getDir());
             mClient.report(new Context(this, project, main, project.getDir()),
                     IssueRegistry.LINT_ERROR,
                     project.getConfiguration().getSeverity(IssueRegistry.LINT_ERROR),
-                    location, message, null);
+                    location, message, TextFormat.RAW);
             classEntries = Collections.emptyList();
         } else {
             classEntries = new ArrayList<ClassEntry>(64);
@@ -1182,13 +1305,11 @@ public class LintDriver {
                 if (file.isFile() && path.endsWith(DOT_CLASS)) {
                     try {
                         byte[] bytes = mClient.readBytes(file);
-                        if (bytes != null) {
-                            for (File dir : classFolders) {
-                                if (path.startsWith(dir.getPath())) {
-                                    entries.add(new ClassEntry(file, null /* jarFile*/, dir,
-                                            bytes));
-                                    break;
-                                }
+                        for (File dir : classFolders) {
+                            if (path.startsWith(dir.getPath())) {
+                                entries.add(new ClassEntry(file, null /* jarFile*/, dir,
+                                        bytes));
+                                break;
                             }
                         }
                     } catch (IOException e) {
@@ -1230,7 +1351,14 @@ public class LintDriver {
                 String sourceContents = null;
                 String sourceName = "";
                 mOuterClasses = new ArrayDeque<ClassNode>();
+                ClassEntry prev = null;
                 for (ClassEntry entry : entries) {
+                    if (prev != null && prev.compareTo(entry) == 0) {
+                        // Duplicate entries for some reason: ignore
+                        continue;
+                    }
+                    prev = entry;
+
                     ClassReader reader;
                     ClassNode classNode;
                     try {
@@ -1438,6 +1566,7 @@ public class LintDriver {
             @NonNull List<File> classPath) {
         for (File classPathEntry : classPath) {
             if (classPathEntry.getName().endsWith(DOT_JAR)) {
+                //noinspection UnnecessaryLocalVariable
                 File jarFile = classPathEntry;
                 if (!jarFile.exists()) {
                     continue;
@@ -1471,11 +1600,14 @@ public class LintDriver {
                 } catch (IOException e) {
                     mClient.log(e, "Could not read jar file contents from %1$s", jarFile);
                 } finally {
-                    Closeables.closeQuietly(zis);
+                    try {
+                        Closeables.close(zis, true /* swallowIOException */);
+                    } catch (IOException e) {
+                        // cannot happen
+                    }
                 }
-
-                continue;
             } else if (classPathEntry.isDirectory()) {
+                //noinspection UnnecessaryLocalVariable
                 File binDir = classPathEntry;
                 List<File> classFiles = new ArrayList<File>();
                 addClassFiles(binDir, classFiles);
@@ -1483,9 +1615,7 @@ public class LintDriver {
                 for (File file : classFiles) {
                     try {
                         byte[] bytes = mClient.readBytes(file);
-                        if (bytes != null) {
-                            entries.add(new ClassEntry(file, null /* jarFile*/, binDir, bytes));
-                        }
+                        entries.add(new ClassEntry(file, null /* jarFile*/, binDir, bytes));
                     } catch (IOException e) {
                         mClient.log(e, null);
                         continue;
@@ -1521,7 +1651,7 @@ public class LintDriver {
             @Nullable Project main,
             @NonNull List<File> sourceFolders,
             @NonNull List<Detector> checks) {
-        IJavaParser javaParser = mClient.getJavaParser();
+        JavaParser javaParser = mClient.getJavaParser(project);
         if (javaParser == null) {
             mClient.log(null, "No java parser provided to lint: not running Java checks");
             return;
@@ -1536,10 +1666,16 @@ public class LintDriver {
         }
         if (!sources.isEmpty()) {
             JavaVisitor visitor = new JavaVisitor(javaParser, checks);
+            List<JavaContext> contexts = Lists.newArrayListWithExpectedSize(sources.size());
             for (File file : sources) {
-                JavaContext context = new JavaContext(this, project, main, file);
+                JavaContext context = new JavaContext(this, project, main, file, javaParser);
+                contexts.add(context);
+            }
+
+            visitor.prepare(contexts);
+            for (JavaContext context : contexts) {
                 fireEvent(EventType.SCANNING_FILE, context);
-                visitor.visitFile(context, file);
+                visitor.visitFile(context);
                 if (mCanceled) {
                     return;
                 }
@@ -1553,7 +1689,7 @@ public class LintDriver {
             @NonNull List<Detector> checks,
             @NonNull List<File> files) {
 
-        IJavaParser javaParser = mClient.getJavaParser();
+        JavaParser javaParser = mClient.getJavaParser(project);
         if (javaParser == null) {
             mClient.log(null, "No java parser provided to lint: not running Java checks");
             return;
@@ -1561,14 +1697,28 @@ public class LintDriver {
 
         JavaVisitor visitor = new JavaVisitor(javaParser, checks);
 
+        List<JavaContext> contexts = Lists.newArrayListWithExpectedSize(files.size());
         for (File file : files) {
             if (file.isFile() && file.getPath().endsWith(DOT_JAVA)) {
-                JavaContext context = new JavaContext(this, project, main, file);
-                fireEvent(EventType.SCANNING_FILE, context);
-                visitor.visitFile(context, file);
-                if (mCanceled) {
-                    return;
-                }
+                contexts.add(new JavaContext(this, project, main, file, javaParser));
+            }
+        }
+
+        if (contexts.isEmpty()) {
+            return;
+        }
+
+        visitor.prepare(contexts);
+
+        if (mCanceled) {
+            return;
+        }
+
+        for (JavaContext context : contexts) {
+            fireEvent(EventType.SCANNING_FILE, context);
+            visitor.visitFile(context);
+            if (mCanceled) {
+                return;
             }
         }
     }
@@ -1588,37 +1738,56 @@ public class LintDriver {
 
     private ResourceFolderType mCurrentFolderType;
     private List<ResourceXmlDetector> mCurrentXmlDetectors;
-    private XmlVisitor mCurrentVisitor;
+    private List<Detector> mCurrentBinaryDetectors;
+    private ResourceVisitor mCurrentVisitor;
 
     @Nullable
-    private XmlVisitor getVisitor(
+    private ResourceVisitor getVisitor(
             @NonNull ResourceFolderType type,
-            @NonNull List<ResourceXmlDetector> checks) {
+            @NonNull List<ResourceXmlDetector> checks,
+            @Nullable List<Detector> binaryChecks) {
         if (type != mCurrentFolderType) {
             mCurrentFolderType = type;
 
             // Determine which XML resource detectors apply to the given folder type
-            List<ResourceXmlDetector> applicableChecks =
+            List<ResourceXmlDetector> applicableXmlChecks =
                     new ArrayList<ResourceXmlDetector>(checks.size());
             for (ResourceXmlDetector check : checks) {
                 if (check.appliesTo(type)) {
-                    applicableChecks.add(check);
+                    applicableXmlChecks.add(check);
+                }
+            }
+            List<Detector> applicableBinaryChecks = null;
+            if (binaryChecks != null) {
+                applicableBinaryChecks = new ArrayList<Detector>(binaryChecks.size());
+                for (Detector check : binaryChecks) {
+                    if (check.appliesTo(type)) {
+                        applicableBinaryChecks.add(check);
+                    }
                 }
             }
 
             // If the list of detectors hasn't changed, then just use the current visitor!
-            if (mCurrentXmlDetectors != null && mCurrentXmlDetectors.equals(applicableChecks)) {
+            if (mCurrentXmlDetectors != null && mCurrentXmlDetectors.equals(applicableXmlChecks)
+                    && Objects.equal(mCurrentBinaryDetectors, applicableBinaryChecks)) {
                 return mCurrentVisitor;
             }
 
-            if (applicableChecks.isEmpty()) {
+            mCurrentXmlDetectors = applicableXmlChecks;
+            mCurrentBinaryDetectors = applicableBinaryChecks;
+
+            if (applicableXmlChecks.isEmpty()
+                    && (applicableBinaryChecks == null || applicableBinaryChecks.isEmpty())) {
                 mCurrentVisitor = null;
                 return null;
             }
 
-            IDomParser parser = mClient.getDomParser();
+            XmlParser parser = mClient.getXmlParser();
             if (parser != null) {
-                mCurrentVisitor = new XmlVisitor(parser, applicableChecks);
+                mCurrentVisitor = new ResourceVisitor(parser, applicableXmlChecks,
+                        applicableBinaryChecks);
+            } else {
+                mCurrentVisitor = null;
             }
         }
 
@@ -1629,21 +1798,24 @@ public class LintDriver {
             @NonNull Project project,
             @Nullable Project main,
             @NonNull File res,
-            @NonNull List<ResourceXmlDetector> checks) {
-        assert res.isDirectory() : res;
+            @NonNull List<ResourceXmlDetector> xmlChecks,
+            @Nullable List<Detector> dirChecks,
+            @Nullable List<Detector> binaryChecks) {
         File[] resourceDirs = res.listFiles();
         if (resourceDirs == null) {
             return;
         }
 
         // Sort alphabetically such that we can process related folder types at the
-        // same time
+        // same time, and to have a defined behavior such that detectors can rely on
+        // predictable ordering, e.g. layouts are seen before menus are seen before
+        // values, etc (l < m < v).
 
         Arrays.sort(resourceDirs);
         for (File dir : resourceDirs) {
             ResourceFolderType type = ResourceFolderType.getFolderType(dir.getName());
             if (type != null) {
-                checkResourceFolder(project, main, dir, type, checks);
+                checkResourceFolder(project, main, dir, type, xmlChecks, dirChecks, binaryChecks);
             }
 
             if (mCanceled) {
@@ -1657,24 +1829,51 @@ public class LintDriver {
             @Nullable Project main,
             @NonNull File dir,
             @NonNull ResourceFolderType type,
-            @NonNull List<ResourceXmlDetector> checks) {
+            @NonNull List<ResourceXmlDetector> xmlChecks,
+            @Nullable List<Detector> dirChecks,
+            @Nullable List<Detector> binaryChecks) {
+
         // Process the resource folder
-        File[] xmlFiles = dir.listFiles();
-        if (xmlFiles != null && xmlFiles.length > 0) {
-            XmlVisitor visitor = getVisitor(type, checks);
-            if (visitor != null) { // if not, there are no applicable rules in this folder
-                // Process files in alphabetical order, to ensure stable output
-                // (for example for the duplicate resource detector)
-                Arrays.sort(xmlFiles);
-                for (File file : xmlFiles) {
-                    if (LintUtils.isXmlFile(file)) {
-                        XmlContext context = new XmlContext(this, project, main, file, type);
-                        fireEvent(EventType.SCANNING_FILE, context);
-                        visitor.visitFile(context, file);
-                        if (mCanceled) {
-                            return;
-                        }
-                    }
+
+        if (dirChecks != null && !dirChecks.isEmpty()) {
+            ResourceContext context = new ResourceContext(this, project, main, dir, type);
+            String folderName = dir.getName();
+            fireEvent(EventType.SCANNING_FILE, context);
+            for (Detector check : dirChecks) {
+                if (check.appliesTo(type)) {
+                    check.beforeCheckFile(context);
+                    check.checkFolder(context, folderName);
+                    check.afterCheckFile(context);
+                }
+            }
+            if (binaryChecks == null && xmlChecks.isEmpty()) {
+                return;
+            }
+        }
+
+        File[] files = dir.listFiles();
+        if (files == null || files.length <= 0) {
+            return;
+        }
+
+        ResourceVisitor visitor = getVisitor(type, xmlChecks, binaryChecks);
+        if (visitor != null) { // if not, there are no applicable rules in this folder
+            // Process files in alphabetical order, to ensure stable output
+            // (for example for the duplicate resource detector)
+            Arrays.sort(files);
+            for (File file : files) {
+                if (LintUtils.isXmlFile(file)) {
+                    XmlContext context = new XmlContext(this, project, main, file, type,
+                            visitor.getParser());
+                    fireEvent(EventType.SCANNING_FILE, context);
+                    visitor.visitFile(context, file);
+                } else if (binaryChecks != null && LintUtils.isBitmapFile(file)) {
+                    ResourceContext context = new ResourceContext(this, project, main, file, type);
+                    fireEvent(EventType.SCANNING_FILE, context);
+                    visitor.visitBinaryResource(context);
+                }
+                if (mCanceled) {
+                    return;
                 }
             }
         }
@@ -1685,6 +1884,8 @@ public class LintDriver {
             @NonNull Project project,
             @Nullable Project main,
             @NonNull List<ResourceXmlDetector> xmlDetectors,
+            @Nullable List<Detector> dirChecks,
+            @Nullable List<Detector> binaryChecks,
             @NonNull List<File> files) {
         for (File file : files) {
             if (file.isDirectory()) {
@@ -1692,25 +1893,42 @@ public class LintDriver {
                 ResourceFolderType type = ResourceFolderType.getFolderType(file.getName());
                 if (type != null && new File(file.getParentFile(), RES_FOLDER).exists()) {
                     // Yes.
-                    checkResourceFolder(project, main, file, type, xmlDetectors);
+                    checkResourceFolder(project, main, file, type, xmlDetectors, dirChecks,
+                            binaryChecks);
                 } else if (file.getName().equals(RES_FOLDER)) { // Is it the res folder?
                     // Yes
-                    checkResFolder(project, main, file, xmlDetectors);
+                    checkResFolder(project, main, file, xmlDetectors, dirChecks, binaryChecks);
                 } else {
                     mClient.log(null, "Unexpected folder %1$s; should be project, " +
                             "\"res\" folder or resource folder", file.getPath());
-                    continue;
                 }
             } else if (file.isFile() && LintUtils.isXmlFile(file)) {
                 // Yes, find out its resource type
                 String folderName = file.getParentFile().getName();
                 ResourceFolderType type = ResourceFolderType.getFolderType(folderName);
                 if (type != null) {
-                    XmlVisitor visitor = getVisitor(type, xmlDetectors);
+                    ResourceVisitor visitor = getVisitor(type, xmlDetectors, binaryChecks);
                     if (visitor != null) {
-                        XmlContext context = new XmlContext(this, project, main, file, type);
+                        XmlContext context = new XmlContext(this, project, main, file, type,
+                                visitor.getParser());
                         fireEvent(EventType.SCANNING_FILE, context);
                         visitor.visitFile(context, file);
+                    }
+                }
+            } else if (binaryChecks != null && file.isFile() && LintUtils.isBitmapFile(file)) {
+                // Yes, find out its resource type
+                String folderName = file.getParentFile().getName();
+                ResourceFolderType type = ResourceFolderType.getFolderType(folderName);
+                if (type != null) {
+                    ResourceVisitor visitor = getVisitor(type, xmlDetectors, binaryChecks);
+                    if (visitor != null) {
+                        ResourceContext context = new ResourceContext(this, project, main, file,
+                                type);
+                        fireEvent(EventType.SCANNING_FILE, context);
+                        visitor.visitBinaryResource(context);
+                        if (mCanceled) {
+                            return;
+                        }
                     }
                 }
             }
@@ -1772,7 +1990,7 @@ public class LintDriver {
                 @NonNull Severity severity,
                 @Nullable Location location,
                 @NonNull String message,
-                @Nullable Object data) {
+                @NonNull TextFormat format) {
             assert mCurrentProject != null;
             if (!mCurrentProject.getReportIssues()) {
                 return;
@@ -1787,7 +2005,7 @@ public class LintDriver {
                 return;
             }
 
-            if (configuration.isIgnored(context, issue, location, message, data)) {
+            if (configuration.isIgnored(context, issue, location, message)) {
                 return;
             }
 
@@ -1795,7 +2013,7 @@ public class LintDriver {
                 return;
             }
 
-            mDelegate.report(context, issue, severity, location, message, data);
+            mDelegate.report(context, issue, severity, location, message, format);
         }
 
         // Everything else just delegates to the embedding lint client
@@ -1851,8 +2069,8 @@ public class LintDriver {
 
         @Override
         @Nullable
-        public IDomParser getDomParser() {
-            return mDelegate.getDomParser();
+        public XmlParser getXmlParser() {
+            return mDelegate.getXmlParser();
         }
 
         @Override
@@ -1874,10 +2092,10 @@ public class LintDriver {
             return mDelegate.getProject(dir, referenceDir);
         }
 
-        @Override
         @Nullable
-        public IJavaParser getJavaParser() {
-            return mDelegate.getJavaParser();
+        @Override
+        public JavaParser getJavaParser(@Nullable Project project) {
+            return mDelegate.getJavaParser(project);
         }
 
         @Override
@@ -1913,6 +2131,18 @@ public class LintDriver {
         @NonNull
         public IAndroidTarget[] getTargets() {
             return mDelegate.getTargets();
+        }
+
+        @Nullable
+        @Override
+        public LocalSdk getSdk() {
+            return mDelegate.getSdk();
+        }
+
+        @Nullable
+        @Override
+        public IAndroidTarget getCompileTarget(@NonNull Project project) {
+            return mDelegate.getCompileTarget(project);
         }
 
         @Override
@@ -1971,6 +2201,45 @@ public class LintDriver {
         public void registerProject(@NonNull File dir, @NonNull Project project) {
             log(Severity.WARNING, null, "Too late to register projects");
             mDelegate.registerProject(dir, project);
+        }
+
+        @Override
+        public IssueRegistry addCustomLintRules(@NonNull IssueRegistry registry) {
+            return mDelegate.addCustomLintRules(registry);
+        }
+
+        @Override
+        public boolean checkForSuppressComments() {
+            return mDelegate.checkForSuppressComments();
+        }
+
+        @Override
+        public boolean supportsProjectResources() {
+            return mDelegate.supportsProjectResources();
+        }
+
+        @Nullable
+        @Override
+        public AbstractResourceRepository getProjectResources(Project project,
+                boolean includeDependencies) {
+            return mDelegate.getProjectResources(project, includeDependencies);
+        }
+
+        @NonNull
+        @Override
+        public Location.Handle createResourceItemHandle(@NonNull ResourceItem item) {
+            return mDelegate.createResourceItemHandle(item);
+        }
+
+        @Nullable
+        @Override
+        public URLConnection openConnection(@NonNull URL url) throws IOException {
+            return mDelegate.openConnection(url);
+        }
+
+        @Override
+        public void closeConnection(@NonNull URLConnection connection) throws IOException {
+            mDelegate.closeConnection(connection);
         }
     }
 
@@ -2057,7 +2326,7 @@ public class LintDriver {
     private static MethodInsnNode findConstructorInvocation(
             @NonNull MethodNode method,
             @NonNull String className) {
-        InsnList nodes = ((MethodNode) method).instructions;
+        InsnList nodes = method.instructions;
         for (int i = 0, n = nodes.size(); i < n; i++) {
             AbstractInsnNode instruction = nodes.get(i);
             if (instruction.getOpcode() == Opcodes.INVOKESPECIAL) {
@@ -2127,6 +2396,7 @@ public class LintDriver {
      * @return true if there is a suppress annotation covering the specific
      *         issue on this field
      */
+    @SuppressWarnings("MethodMayBeStatic") // API; reserve need to require driver state later
     public boolean isSuppressed(@Nullable Issue issue, @NonNull FieldNode field) {
         if (field.invisibleAnnotations != null) {
             @SuppressWarnings("unchecked")
@@ -2195,8 +2465,7 @@ public class LintDriver {
                             Object value = annotation.values.get(i + 1);
                             if (value instanceof String) {
                                 String id = (String) value;
-                                if (id.equalsIgnoreCase(SUPPRESS_ALL) ||
-                                        issue != null && id.equalsIgnoreCase(issue.getId())) {
+                                if (matches(issue, id)) {
                                     return true;
                                 }
                             } else if (value instanceof List) {
@@ -2205,8 +2474,7 @@ public class LintDriver {
                                 for (Object v : list) {
                                     if (v instanceof String) {
                                         String id = (String) v;
-                                        if (id.equalsIgnoreCase(SUPPRESS_ALL) || (issue != null
-                                                && id.equalsIgnoreCase(issue.getId()))) {
+                                        if (matches(issue, id)) {
                                             return true;
                                         }
                                     }
@@ -2221,15 +2489,39 @@ public class LintDriver {
         return false;
     }
 
+    private static boolean matches(@Nullable Issue issue, @NonNull String id) {
+        if (id.equalsIgnoreCase(SUPPRESS_ALL)) {
+            return true;
+        }
+
+        if (issue != null) {
+            String issueId = issue.getId();
+            if (id.equalsIgnoreCase(issueId)) {
+                return true;
+            }
+            if (id.startsWith(STUDIO_ID_PREFIX)
+                && id.regionMatches(true, STUDIO_ID_PREFIX.length(), issueId, 0, issueId.length())
+                && id.substring(STUDIO_ID_PREFIX.length()).equalsIgnoreCase(issueId)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     /**
      * Returns whether the given issue is suppressed in the given parse tree node.
      *
+     * @param context the context for the source being scanned
      * @param issue the issue to be checked, or null to just check for "all"
      * @param scope the AST node containing the issue
      * @return true if there is a suppress annotation covering the specific
      *         issue in this class
      */
-    public boolean isSuppressed(@NonNull Issue issue, @Nullable Node scope) {
+    public boolean isSuppressed(@Nullable JavaContext context, @NonNull Issue issue,
+            @Nullable Node scope) {
+        boolean checkComments = mClient.checkForSuppressComments() &&
+                context != null && context.containsCommentSuppress();
         while (scope != null) {
             Class<? extends Node> type = scope.getClass();
             // The Lombok AST uses a flat hierarchy of node type implementation classes
@@ -2262,6 +2554,10 @@ public class LintDriver {
                 }
             }
 
+            if (checkComments && context.isSuppressedWithComment(scope, issue)) {
+                return true;
+            }
+
             scope = scope.getParent();
         }
 
@@ -2286,9 +2582,7 @@ public class LintDriver {
             return false;
         }
 
-        Iterator<Annotation> iterator = annotations.iterator();
-        while (iterator.hasNext()) {
-            Annotation annotation = iterator.next();
+        for (Annotation annotation : annotations) {
             TypeReference t = annotation.astAnnotationTypeReference();
             String typeName = t.getTypeName();
             if (typeName.endsWith(SUPPRESS_LINT)
@@ -2296,9 +2590,7 @@ public class LintDriver {
                 StrictListAccessor<AnnotationElement, Annotation> values =
                         annotation.astElements();
                 if (values != null) {
-                    Iterator<AnnotationElement> valueIterator = values.iterator();
-                    while (valueIterator.hasNext()) {
-                        AnnotationElement element = valueIterator.next();
+                    for (AnnotationElement element : values) {
                         AnnotationValue valueNode = element.astValue();
                         if (valueNode == null) {
                             continue;
@@ -2306,8 +2598,7 @@ public class LintDriver {
                         if (valueNode instanceof StringLiteral) {
                             StringLiteral literal = (StringLiteral) valueNode;
                             String value = literal.astValue();
-                            if (value.equalsIgnoreCase(SUPPRESS_ALL) ||
-                                    issue != null && issue.getId().equalsIgnoreCase(value)) {
+                            if (matches(issue, value)) {
                                 return true;
                             }
                         } else if (valueNode instanceof ArrayInitializer) {
@@ -2317,13 +2608,10 @@ public class LintDriver {
                             if (expressions == null) {
                                 continue;
                             }
-                            Iterator<Expression> arrayIterator = expressions.iterator();
-                            while (arrayIterator.hasNext()) {
-                                Expression arrayElement = arrayIterator.next();
+                            for (Expression arrayElement : expressions) {
                                 if (arrayElement instanceof StringLiteral) {
                                     String value = ((StringLiteral) arrayElement).astValue();
-                                    if (value.equalsIgnoreCase(SUPPRESS_ALL) || (issue != null
-                                            && issue.getId().equalsIgnoreCase(value))) {
+                                    if (matches(issue, value)) {
                                         return true;
                                     }
                                 }
@@ -2345,28 +2633,31 @@ public class LintDriver {
      * @return true if there is a suppress annotation covering the specific
      *         issue in this class
      */
-    public boolean isSuppressed(@NonNull Issue issue, @Nullable org.w3c.dom.Node node) {
+    public boolean isSuppressed(@Nullable XmlContext context, @NonNull Issue issue,
+            @Nullable org.w3c.dom.Node node) {
         if (node instanceof Attr) {
             node = ((Attr) node).getOwnerElement();
         }
+        boolean checkComments = mClient.checkForSuppressComments()
+                && context != null && context.containsCommentSuppress();
         while (node != null) {
             if (node.getNodeType() == org.w3c.dom.Node.ELEMENT_NODE) {
                 Element element = (Element) node;
                 if (element.hasAttributeNS(TOOLS_URI, ATTR_IGNORE)) {
                     String ignore = element.getAttributeNS(TOOLS_URI, ATTR_IGNORE);
                     if (ignore.indexOf(',') == -1) {
-                        if (ignore.equalsIgnoreCase(SUPPRESS_ALL) || (issue != null
-                                && issue.getId().equalsIgnoreCase(ignore))) {
+                        if (matches(issue, ignore)) {
                             return true;
                         }
                     } else {
                         for (String id : ignore.split(",")) { //$NON-NLS-1$
-                            if (id.equalsIgnoreCase(SUPPRESS_ALL) || (issue != null
-                                    && issue.getId().equalsIgnoreCase(id))) {
+                            if (matches(issue, id)) {
                                 return true;
                             }
                         }
                     }
+                } else if (checkComments && context.isSuppressedWithComment(node, issue)) {
+                    return true;
                 }
             }
 
@@ -2374,6 +2665,43 @@ public class LintDriver {
         }
 
         return false;
+    }
+
+    private File mCachedFolder = null;
+    private int mCachedFolderVersion = -1;
+    /** Pattern for version qualifiers */
+    private static final Pattern VERSION_PATTERN = Pattern.compile("^v(\\d+)$"); //$NON-NLS-1$
+
+    /**
+     * Returns the folder version of the given file. For example, for the file values-v14/foo.xml,
+     * it returns 14.
+     *
+     * @param resourceFile the file to be checked
+     * @return the folder version, or -1 if no specific version was specified
+     */
+    public int getResourceFolderVersion(@NonNull File resourceFile) {
+        File parent = resourceFile.getParentFile();
+        if (parent == null) {
+            return -1;
+        }
+        if (parent.equals(mCachedFolder)) {
+            return mCachedFolderVersion;
+        }
+
+        mCachedFolder = parent;
+        mCachedFolderVersion = -1;
+
+        for (String qualifier : Splitter.on('-').split(parent.getName())) {
+            Matcher matcher = VERSION_PATTERN.matcher(qualifier);
+            if (matcher.matches()) {
+                String group = matcher.group(1);
+                assert group != null;
+                mCachedFolderVersion = Integer.parseInt(group);
+                break;
+            }
+        }
+
+        return mCachedFolderVersion;
     }
 
     /** A pending class to be analyzed by {@link #checkClasses} */
@@ -2401,11 +2729,14 @@ public class LintDriver {
         }
 
         @Override
-        public int compareTo(ClassEntry other) {
+        public int compareTo(@NonNull ClassEntry other) {
             String p1 = file.getPath();
             String p2 = other.file.getPath();
             int m1 = p1.length();
             int m2 = p2.length();
+            if (m1 == m2 && p1.equals(p2)) {
+                return 0;
+            }
             int m = Math.min(m1, m2);
 
             for (int i = 0; i < m; i++) {

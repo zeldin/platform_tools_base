@@ -20,8 +20,8 @@ import com.android.annotations.NonNull;
 import com.android.tools.lint.detector.api.Category;
 import com.android.tools.lint.detector.api.Implementation;
 import com.android.tools.lint.detector.api.Issue;
-import com.android.tools.lint.detector.api.LayoutDetector;
 import com.android.tools.lint.detector.api.Location;
+import com.android.tools.lint.detector.api.ResourceXmlDetector;
 import com.android.tools.lint.detector.api.Scope;
 import com.android.tools.lint.detector.api.Severity;
 import com.android.tools.lint.detector.api.Speed;
@@ -33,21 +33,27 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * Checks that the encoding used in resource files is always UTF-8.
+ * Checks that the encoding used in resource files is always UTF-8
+ * <p>
+ * TODO: Add a check which looks at files which do not specify the encoding
+ * and check the contents to see if it contains characters where it's ambiguous.
  */
-public class Utf8Detector extends LayoutDetector {
+public class Utf8Detector extends ResourceXmlDetector {
+
     /** Detects non-utf8 encodings */
     public static final Issue ISSUE = Issue.create(
             "EnforceUTF8", //$NON-NLS-1$
             "Encoding used in resource files is not UTF-8",
-            "Checks that all XML resource files are using UTF-8 as the file encoding",
             "XML supports encoding in a wide variety of character sets. However, not all " +
             "tools handle the XML encoding attribute correctly, and nearly all Android " +
             "apps use UTF-8, so by using UTF-8 you can protect yourself against subtle " +
-            "bugs when using non-ASCII characters.",
+            "bugs when using non-ASCII characters.\n" +
+            "\n" +
+            "In particular, the Android Gradle build system will merge resource XML files " +
+            "assuming the resource files are using UTF-8 encoding.\n",
             Category.I18N,
-            2,
-            Severity.WARNING,
+            5,
+            Severity.FATAL,
             new Implementation(
                     Utf8Detector.class,
                     Scope.RESOURCE_FILE_SCOPE));
@@ -63,7 +69,7 @@ public class Utf8Detector extends LayoutDetector {
     @NonNull
     @Override
     public Speed getSpeed() {
-        return Speed.FAST;
+        return Speed.NORMAL;
     }
 
     @Override
@@ -102,7 +108,7 @@ public class Utf8Detector extends LayoutDetector {
                         matcher.start(1), matcher.end(1));
                 context.report(ISSUE, null, location, String.format(
                         "%1$s: Not using UTF-8 as the file encoding. This can lead to subtle " +
-                                "bugs with non-ascii characters", encoding), null);
+                                "bugs with non-ascii characters", encoding));
             }
         }
     }

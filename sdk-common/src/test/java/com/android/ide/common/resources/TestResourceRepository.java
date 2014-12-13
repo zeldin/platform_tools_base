@@ -17,7 +17,7 @@ import com.google.common.io.Files;
 import java.io.File;
 import java.io.IOException;
 
-class TestResourceRepository extends ResourceRepository {
+public class TestResourceRepository extends ResourceRepository {
     private final File mDir;
 
     TestResourceRepository(@NonNull IAbstractFolder resFolder, boolean isFrameworkRepository,
@@ -59,7 +59,8 @@ class TestResourceRepository extends ResourceRepository {
      */
     @SuppressWarnings("ResultOfMethodCallIgnored")
     @NonNull
-    static TestResourceRepository create(boolean isFramework, Object[] data) throws IOException {
+    public static TestResourceRepository create(boolean isFramework, Object[] data)
+            throws IOException {
         File dir = Files.createTempDir();
         File res = new File(dir, FD_RES);
         res.mkdirs();

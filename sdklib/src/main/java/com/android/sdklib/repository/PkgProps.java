@@ -38,6 +38,7 @@ public class PkgProps {
     public static final String PKG_RELEASE_URL          = "Pkg.RelNoteUrl";         //$NON-NLS-1$
     public static final String PKG_SOURCE_URL           = "Pkg.SourceUrl";          //$NON-NLS-1$
     public static final String PKG_OBSOLETE             = "Pkg.Obsolete";           //$NON-NLS-1$
+    public static final String PKG_LIST_DISPLAY         = "Pkg.ListDisplay";        //$NON-NLS-1$
 
     // AndroidVersion
 
@@ -98,4 +99,6 @@ public class PkgProps {
     // SystemImagePackage
 
     public static final String SYS_IMG_ABI              = "SystemImage.Abi";        //$NON-NLS-1$
+    public static final String SYS_IMG_TAG_ID           = "SystemImage.TagId";      //$NON-NLS-1$
+    public static final String SYS_IMG_TAG_DISPLAY      = "SystemImage.TagDisplay"; //$NON-NLS-1$
 }

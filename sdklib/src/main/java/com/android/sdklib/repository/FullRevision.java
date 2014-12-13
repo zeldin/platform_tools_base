@@ -37,14 +37,28 @@ public class FullRevision implements Comparable<FullRevision> {
     public static final int IMPLICIT_MICRO_REV = 0;
     public static final int NOT_A_PREVIEW      = 0;
 
+    /** Only major revision specified: 1 term */
+    protected static final int PRECISION_MAJOR = 1;
+    /** Only major and minor revisions specified: 2 terms (x.y) */
+    protected static final int PRECISION_MINOR = 2;
+    /** Major, minor and micro revisions specified: 3 terms (x.y.z) */
+    protected static final int PRECISION_MICRO = 3;
+    /** Major, minor, micro and preview revisions specified: 4 terms (x.y.z-rcN) */
+    protected static final int PRECISION_PREVIEW = 4;
+
+    public static final FullRevision NOT_SPECIFIED = new FullRevision(MISSING_MAJOR_REV);
+
     private static final Pattern FULL_REVISION_PATTERN =
         //                   1=major       2=minor       3=micro              4=preview
-        Pattern.compile("\\s*([0-9]+)(?:\\.([0-9]+)(?:\\.([0-9]+))?)?\\s*(?:rc([0-9]+))?\\s*");
+        Pattern.compile("\\s*([0-9]+)(?:\\.([0-9]+)(?:\\.([0-9]+))?)?([\\s-]*)?(?:rc([0-9]+))?\\s*");
+
+    protected static final String DEFAULT_SEPARATOR = " ";
 
     private final int mMajor;
     private final int mMinor;
     private final int mMicro;
     private final int mPreview;
+    private final String mPreviewSeparator;
 
     public FullRevision(int major) {
         this(major, IMPLICIT_MINOR_REV, IMPLICIT_MICRO_REV);
@@ -55,10 +69,16 @@ public class FullRevision implements Comparable<FullRevision> {
     }
 
     public FullRevision(int major, int minor, int micro, int preview) {
+      this(major, minor, micro, preview, DEFAULT_SEPARATOR);
+    }
+
+    public FullRevision(int major, int minor, int micro, int preview,
+            @NonNull String previewSeparator) {
         mMajor = major;
         mMinor = minor;
         mMicro = micro;
         mPreview = preview;
+        mPreviewSeparator = previewSeparator;
     }
 
     public int getMajor() {
@@ -71,6 +91,11 @@ public class FullRevision implements Comparable<FullRevision> {
 
     public int getMicro() {
         return mMicro;
+    }
+
+    @NonNull
+    protected String getSeparator() {
+        return mPreviewSeparator;
     }
 
     public boolean isPreview() {
@@ -99,13 +124,15 @@ public class FullRevision implements Comparable<FullRevision> {
     @NonNull
     public static FullRevision parseRevision(@NonNull String revision)
             throws NumberFormatException {
-        return parseRevisionImpl(revision, true /*supportMinorMicro*/, true /*supportPreview*/);
+        return parseRevisionImpl(revision, true /*supportMinorMicro*/, true /*supportPreview*/,
+                false /*keepPrevision*/);
     }
 
     @NonNull
     protected static FullRevision parseRevisionImpl(@NonNull String revision,
                                                     boolean supportMinorMicro,
-                                                    boolean supportPreview)
+                                                    boolean supportPreview,
+                                                    boolean keepPrecision)
                                   throws NumberFormatException {
         if (revision == null) {
             throw new NumberFormatException("revision is <null>"); //$NON-NLS-1$
@@ -121,6 +148,8 @@ public class FullRevision implements Comparable<FullRevision> {
                 int minor = IMPLICIT_MINOR_REV;
                 int micro = IMPLICIT_MICRO_REV;
                 int preview = NOT_A_PREVIEW;
+                int precision = PRECISION_MAJOR;
+                String previewSeparator = " ";
 
                 String s = m.group(2);
                 if (s != null) {
@@ -128,6 +157,7 @@ public class FullRevision implements Comparable<FullRevision> {
                         error = " -- Minor number not supported";   //$NON-NLS-1$
                     } else {
                         minor = Integer.parseInt(s);
+                        precision = PRECISION_MINOR;
                     }
                 }
 
@@ -137,20 +167,28 @@ public class FullRevision implements Comparable<FullRevision> {
                         error = " -- Micro number not supported";   //$NON-NLS-1$
                     } else {
                         micro = Integer.parseInt(s);
+                        precision = PRECISION_MICRO;
                     }
                 }
 
-                s = m.group(4);
+                s = m.group(5); // Group 4 is the preview separator
                 if (s != null) {
                     if (!supportPreview) {
                         error = " -- Preview number not supported";   //$NON-NLS-1$
                     } else {
                         preview = Integer.parseInt(s);
+                        previewSeparator = m.group(4);
+                        precision = PRECISION_PREVIEW;
                     }
                 }
 
                 if (error == null) {
-                    return new FullRevision(major, minor, micro, preview);
+                    if (keepPrecision) {
+                        return new PreciseRevision(major, minor, micro, preview, precision,
+                                previewSeparator);
+                    } else {
+                        return new FullRevision(major, minor, micro, preview, previewSeparator);
+                    }
                 }
             }
         } catch (Throwable t) {
@@ -180,7 +218,7 @@ public class FullRevision implements Comparable<FullRevision> {
           .append('.').append(mMicro);
 
         if (mPreview != NOT_A_PREVIEW) {
-            sb.append(" rc").append(mPreview);
+            sb.append(mPreviewSeparator).append("rc").append(mPreview);
         }
 
         return sb.toString();
@@ -203,7 +241,7 @@ public class FullRevision implements Comparable<FullRevision> {
             sb.append('.').append(mMicro);
         }
         if (mPreview != NOT_A_PREVIEW) {
-            sb.append(" rc").append(mPreview);
+            sb.append(mPreviewSeparator).append("rc").append(mPreview);
         }
 
         return sb.toString();

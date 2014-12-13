@@ -70,6 +70,14 @@ public class HtmlBuilder {
         return this;
     }
 
+    public HtmlBuilder newlineIfNecessary() {
+        if (!SdkUtils.endsWith(mStringBuilder, "<BR/>\n")) {
+            mStringBuilder.append("<BR/>\n");
+        }
+
+        return this;
+    }
+
     public HtmlBuilder addLink(@Nullable String textBefore,
             @NonNull String linkText,
             @Nullable String textAfter,
@@ -224,9 +232,10 @@ public class HtmlBuilder {
         }
         mStringBuilder.append("<img src='");
         mStringBuilder.append(link);
+        mStringBuilder.append("'");
 
         if (altText != null) {
-            mStringBuilder.append("' alt=\"");
+            mStringBuilder.append(" alt=\"");
             mStringBuilder.append(altText);
             mStringBuilder.append("\"");
         }

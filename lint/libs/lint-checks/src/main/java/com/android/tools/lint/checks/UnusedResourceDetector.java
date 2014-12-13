@@ -20,9 +20,6 @@ import static com.android.SdkConstants.ANDROID_URI;
 import static com.android.SdkConstants.ATTR_NAME;
 import static com.android.SdkConstants.ATTR_REF_PREFIX;
 import static com.android.SdkConstants.ATTR_TYPE;
-import static com.android.SdkConstants.DOT_GIF;
-import static com.android.SdkConstants.DOT_JPG;
-import static com.android.SdkConstants.DOT_PNG;
 import static com.android.SdkConstants.DOT_XML;
 import static com.android.SdkConstants.RESOURCE_CLR_STYLEABLE;
 import static com.android.SdkConstants.RESOURCE_CLZ_ARRAY;
@@ -38,7 +35,6 @@ import static com.android.SdkConstants.TAG_PLURALS;
 import static com.android.SdkConstants.TAG_RESOURCES;
 import static com.android.SdkConstants.TAG_STRING_ARRAY;
 import static com.android.SdkConstants.TAG_STYLE;
-import static com.android.tools.lint.detector.api.LintUtils.endsWith;
 
 import com.android.annotations.NonNull;
 import com.android.annotations.Nullable;
@@ -102,7 +98,6 @@ public class UnusedResourceDetector extends ResourceXmlDetector implements Detec
     public static final Issue ISSUE = Issue.create(
             "UnusedResources", //$NON-NLS-1$
             "Unused resources",
-            "Looks for unused resources",
             "Unused resources make applications larger and slow down builds.",
             Category.PERFORMANCE,
             3,
@@ -113,7 +108,6 @@ public class UnusedResourceDetector extends ResourceXmlDetector implements Detec
     public static final Issue ISSUE_IDS = Issue.create(
             "UnusedIds", //$NON-NLS-1$
             "Unused id",
-            "Looks for unused id's",
             "This resource id definition appears not to be needed since it is not referenced " +
             "from anywhere. Having id definitions, even if unused, is not necessarily a bad " +
             "idea since they make working on layouts and menus easier, so there is not a " +
@@ -158,12 +152,9 @@ public class UnusedResourceDetector extends ResourceXmlDetector implements Detec
     public void beforeCheckFile(@NonNull Context context) {
         File file = context.file;
 
-        String fileName = file.getName();
-        boolean isXmlFile = endsWith(fileName, DOT_XML);
-        if (isXmlFile
-                || endsWith(fileName, DOT_PNG)
-                || endsWith(fileName, DOT_JPG)
-                || endsWith(fileName, DOT_GIF)) {
+        boolean isXmlFile = LintUtils.isXmlFile(file);
+        if (isXmlFile || LintUtils.isBitmapFile(file)) {
+            String fileName = file.getName();
             String parentName = file.getParentFile().getName();
             int dash = parentName.indexOf('-');
             String typeName = parentName.substring(0, dash == -1 ? parentName.length() : dash);
@@ -183,7 +174,7 @@ public class UnusedResourceDetector extends ResourceXmlDetector implements Detec
                             if (xmlContext.document != null
                                     && xmlContext.document.getDocumentElement() != null) {
                                 Element root = xmlContext.document.getDocumentElement();
-                                if (xmlContext.getDriver().isSuppressed(ISSUE, root)) {
+                                if (xmlContext.getDriver().isSuppressed(xmlContext, ISSUE, root)) {
                                     //  Also remove it from consideration such that even the
                                     // presence of this field in the R file is ignored.
                                     mUnused.remove(resource);
@@ -256,6 +247,7 @@ public class UnusedResourceDetector extends ResourceXmlDetector implements Detec
                 for (Map.Entry<String, Location> entry : mUnused.entrySet()) {
                     String resource = entry.getKey();
                     Location location = entry.getValue();
+                    //noinspection VariableNotUsedInsideIf
                     if (location != null) {
                         continue;
                     }
@@ -339,11 +331,11 @@ public class UnusedResourceDetector extends ResourceXmlDetector implements Detec
                         }
                     }
 
-                    String message = String.format("The resource %1$s appears to be unused",
+                    String message = String.format("The resource `%1$s` appears to be unused",
                             resource);
                     Issue issue = getIssue(resource);
                     // TODO: Compute applicable node scope
-                    context.report(issue, location, message, resource);
+                    context.report(issue, location, message);
                 }
             }
         }
@@ -408,7 +400,8 @@ public class UnusedResourceDetector extends ResourceXmlDetector implements Detec
                     } else {
                         assert context.getPhase() == 2;
                         if (mUnused.containsKey(resource)) {
-                            if (context.getDriver().isSuppressed(getIssue(resource), item)) {
+                            if (context.getDriver().isSuppressed(context, getIssue(resource),
+                                    item)) {
                                 mUnused.remove(resource);
                                 continue;
                             }
@@ -426,7 +419,8 @@ public class UnusedResourceDetector extends ResourceXmlDetector implements Detec
                     }
                 }
             }
-        } else if (mReferences != null) {
+        } else //noinspection VariableNotUsedInsideIf
+            if (mReferences != null) {
             assert TAG_STYLE.equals(element.getTagName())
                 || TAG_ARRAY.equals(element.getTagName())
                 || TAG_PLURALS.equals(element.getTagName())
@@ -491,7 +485,7 @@ public class UnusedResourceDetector extends ResourceXmlDetector implements Detec
             if (context.getPhase() == 1) {
                 mDeclarations.add(resource);
             } else if (mUnused.containsKey(resource)) {
-                if (context.getDriver().isSuppressed(getIssue(resource), attribute)) {
+                if (context.getDriver().isSuppressed(context, getIssue(resource), attribute)) {
                     mUnused.remove(resource);
                     return;
                 }

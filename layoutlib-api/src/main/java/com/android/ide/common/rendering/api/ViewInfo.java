@@ -181,4 +181,13 @@ public class ViewInfo {
     public int getBottomMargin() {
         return mBottomMargin;
     }
+
+    /**
+     * Returns the type of View.
+     * @see ViewType
+     */
+    public ViewType getViewType() {
+        return ViewType.USER;
+    }
+
 }

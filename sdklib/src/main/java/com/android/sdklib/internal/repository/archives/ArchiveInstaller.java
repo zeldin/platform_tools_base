@@ -29,9 +29,9 @@ import com.android.sdklib.internal.repository.sources.SdkSource;
 import com.android.sdklib.io.FileOp;
 import com.android.sdklib.io.IFileOp;
 import com.android.sdklib.repository.RepoConstants;
-import com.android.sdklib.util.GrabProcessOutput;
-import com.android.sdklib.util.GrabProcessOutput.IProcessOutput;
-import com.android.sdklib.util.GrabProcessOutput.Wait;
+import com.android.utils.GrabProcessOutput;
+import com.android.utils.GrabProcessOutput.IProcessOutput;
+import com.android.utils.GrabProcessOutput.Wait;
 import com.android.utils.Pair;
 
 import org.apache.commons.compress.archivers.zip.ZipArchiveEntry;
@@ -55,6 +55,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Enumeration;
 import java.util.HashSet;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Properties;
 import java.util.Set;
@@ -421,7 +422,9 @@ public class ArchiveInstaller {
                                   resp.getFirstHeader(HttpHeaders.LAST_MODIFIED).getValue());
             }
 
-            mFileOp.saveProperties(propsFile, props, "## Android SDK Download.");  //$NON-NLS-1$
+            try {
+                mFileOp.saveProperties(propsFile, props, "## Android SDK Download.");  //$NON-NLS-1$
+            } catch (IOException ignore) {}
 
             // On success, status can be:
             // - 206 (Partial content), if resumeHeaders is not null (we asked for a partial
@@ -1085,7 +1088,30 @@ public class ArchiveInstaller {
      */
     @VisibleForTesting(visibility=Visibility.PRIVATE)
     protected boolean generateSourceProperties(Archive archive, File unzipDestFolder) {
-        Properties props = new Properties();
+
+        // Create a version of Properties that returns a sorted key set.
+        // This is used by Properties#saveProperties and should ensure the
+        // properties are in a stable order. Unit tests rely on this fact.
+        @SuppressWarnings("serial")
+        Properties props = new Properties() {
+            @Override
+            public synchronized Enumeration<Object> keys() {
+                Set<Object> sortedSet = new TreeSet<Object>(keySet());
+                final Iterator<Object> it = sortedSet.iterator();
+                return new Enumeration<Object>() {
+                    @Override
+                    public boolean hasMoreElements() {
+                        return it.hasNext();
+                    }
+
+                    @Override
+                    public Object nextElement() {
+                        return it.next();
+                    }
+
+                };
+            }
+        };
 
         archive.saveProperties(props);
 
@@ -1094,10 +1120,15 @@ public class ArchiveInstaller {
             pkg.saveProperties(props);
         }
 
-        return mFileOp.saveProperties(
+        try {
+            mFileOp.saveProperties(
                 new File(unzipDestFolder, SdkConstants.FN_SOURCE_PROP),
                 props,
                 "## Android Tool: Source of this archive.");  //$NON-NLS-1$
+            return true;
+        } catch (IOException ignore) {
+            return false;
+        }
     }
 
     /**

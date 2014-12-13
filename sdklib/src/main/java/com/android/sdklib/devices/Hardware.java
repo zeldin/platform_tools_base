@@ -21,7 +21,9 @@ import com.android.annotations.Nullable;
 import com.android.resources.Keyboard;
 import com.android.resources.Navigation;
 import com.android.resources.UiMode;
+import com.google.common.base.Objects;
 
+import java.io.File;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.EnumSet;
@@ -45,6 +47,16 @@ public class Hardware {
     private EnumSet<Abi> mAbis = EnumSet.noneOf(Abi.class);
     private EnumSet<UiMode> mUiModes = EnumSet.noneOf(UiMode.class);
     private PowerType mPluggedIn;
+    private File mSkinFile;
+
+    public void setSkinFile(@Nullable File skinFile) {
+      mSkinFile = skinFile;
+    }
+
+    @Nullable
+    public File getSkinFile() {
+        return mSkinFile;
+    }
 
     @NonNull
     public Set<Network> getNetworking() {
@@ -258,6 +270,7 @@ public class Hardware {
         hw.mAbis = mAbis.clone();
         hw.mUiModes = mUiModes.clone();
         hw.mPluggedIn = mPluggedIn;
+        hw.mSkinFile = mSkinFile;
         return hw;
     }
 
@@ -285,8 +298,8 @@ public class Hardware {
                 && mGpu.equals(hw.getGpu())
                 && mAbis.equals(hw.getSupportedAbis())
                 && mUiModes.equals(hw.getSupportedUiModes())
-                && mPluggedIn == hw.getChargeType();
-
+                && mPluggedIn == hw.getChargeType()
+                && Objects.equal(mSkinFile, hw.getSkinFile());
     }
 
     @Override
@@ -316,6 +329,9 @@ public class Hardware {
         hash = 31 * hash + mButtons.ordinal();
         hash = 31 * hash + mInternalStorage.hashCode();
         hash = 31 * hash + mRemovableStorage.hashCode();
+        if (mSkinFile != null) {
+            hash = 31 * hash + mSkinFile.hashCode();
+        }
 
         for (Character c : mCpu.toCharArray()) {
             hash = 31 * hash + c;
@@ -338,5 +354,46 @@ public class Hardware {
         hash = 31 * hash + temp;
 
         return hash;
+    }
+
+    @Override
+    public String toString() {
+        StringBuilder sb = new StringBuilder();
+        sb.append("Hardware <mScreen=");
+        sb.append(mScreen);
+        sb.append(", mNetworking=");
+        sb.append(mNetworking);
+        sb.append(", mSensors=");
+        sb.append(mSensors);
+        sb.append(", mMic=");
+        sb.append(mMic);
+        sb.append(", mCameras=");
+        sb.append(mCameras);
+        sb.append(", mKeyboard=");
+        sb.append(mKeyboard);
+        sb.append(", mNav=");
+        sb.append(mNav);
+        sb.append(", mRam=");
+        sb.append(mRam);
+        sb.append(", mButtons=");
+        sb.append(mButtons);
+        sb.append(", mInternalStorage=");
+        sb.append(mInternalStorage);
+        sb.append(", mRemovableStorage=");
+        sb.append(mRemovableStorage);
+        sb.append(", mCpu=");
+        sb.append(mCpu);
+        sb.append(", mGpu=");
+        sb.append(mGpu);
+        sb.append(", mAbis=");
+        sb.append(mAbis);
+        sb.append(", mUiModes=");
+        sb.append(mUiModes);
+        sb.append(", mPluggedIn=");
+        sb.append(mPluggedIn);
+        sb.append(", mSkinFile=");
+        sb.append(mSkinFile);
+        sb.append(">");
+        return sb.toString();
     }
 }

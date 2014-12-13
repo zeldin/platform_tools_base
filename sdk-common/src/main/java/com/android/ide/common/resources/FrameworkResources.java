@@ -45,10 +45,10 @@ import java.util.Map;
  *
  * This behaves the same as {@link ResourceRepository} except that it differentiates between
  * resources that are public and non public.
- * {@link #getResources(ResourceType)} and {@link #hasResourcesOfType(ResourceType)} only return
+ * {@link #getResourceItemsOfType(ResourceType)} and {@link #hasResourcesOfType(ResourceType)} only return
  * public resources. This is typically used to display resource lists in the UI.
  *
- * {@link #getConfiguredResources(com.android.ide.eclipse.adt.internal.resources.configurations.FolderConfiguration)}
+ * {@link #getConfiguredResources(com.android.ide.common.resources.configuration.FolderConfiguration)}
  * returns all resources, even the non public ones so that this can be used for rendering.
  */
 public class FrameworkResources extends ResourceRepository {
@@ -69,7 +69,7 @@ public class FrameworkResources extends ResourceRepository {
      * {@link ResourceItem} matching a given {@link ResourceType}.
      *
      * @param type the type of the resources to return
-     * @return a collection of items, possible empty.
+     * @return a collection of items, possibly empty.
      */
     @Override
     @NonNull
@@ -84,7 +84,7 @@ public class FrameworkResources extends ResourceRepository {
      */
     @Override
     public boolean hasResourcesOfType(@NonNull ResourceType type) {
-        return mPublicResourceMap.get(type).size() > 0;
+        return !mPublicResourceMap.get(type).isEmpty();
     }
 
     @Override
@@ -100,12 +100,11 @@ public class FrameworkResources extends ResourceRepository {
      * This map is a subset of the full resource map that only contains framework resources
      * that are public.
      *
-     * @param resFolder The root folder of the resources
      * @param logger a logger to report issues to
      */
     public void loadPublicResources(@Nullable ILogger logger) {
         IAbstractFolder valueFolder = getResFolder().getFolder(SdkConstants.FD_RES_VALUES);
-        if (valueFolder.exists() == false) {
+        if (!valueFolder.exists()) {
             return;
         }
 
@@ -173,7 +172,7 @@ public class FrameworkResources extends ResourceRepository {
                                         int size;
                                         switch (type) {
                                             case STYLE: size = 500; break;
-                                            case ATTR: size = 1000; break;
+                                            case ATTR: size = 1050; break;
                                             case DRAWABLE: size = 200; break;
                                             case ID: size = 50; break;
                                             case LAYOUT:

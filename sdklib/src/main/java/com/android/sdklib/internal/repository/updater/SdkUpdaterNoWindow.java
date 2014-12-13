@@ -114,13 +114,37 @@ public class SdkUpdaterNoWindow {
      * @param dryMode True to check what would be updated/installed but do not actually
      *   download or install anything.
      * @param acceptLicense SDK licenses to automatically accept.
+     * @deprecated Use {@link #updateAll(java.util.ArrayList, boolean, boolean, String, boolean)}
+     *   instead
      */
+    @Deprecated
     public void updateAll(
             ArrayList<String> pkgFilter,
             boolean includeAll,
             boolean dryMode,
             String acceptLicense) {
-        mUpdaterData.updateOrInstallAll_NoGUI(pkgFilter, includeAll, dryMode, acceptLicense);
+        updateAll(pkgFilter, includeAll, dryMode, acceptLicense, false);
+    }
+
+    /**
+     * Performs the actual update.
+     *
+     * @param pkgFilter A list of {@link SdkRepoConstants#NODES} to limit the type of packages
+     *   we can update. A null or empty list means to update everything possible.
+     * @param includeAll True to list and install all packages, including obsolete ones.
+     * @param dryMode True to check what would be updated/installed but do not actually
+     *   download or install anything.
+     * @param acceptLicense SDK licenses to automatically accept.
+     * @param includeDependencies If true, also include any required dependencies
+     */
+    public void updateAll(
+            ArrayList<String> pkgFilter,
+            boolean includeAll,
+            boolean dryMode,
+            String acceptLicense,
+            boolean includeDependencies) {
+        mUpdaterData.updateOrInstallAll_NoGUI(pkgFilter, includeAll, dryMode, acceptLicense,
+                includeDependencies);
     }
 
     /**
@@ -514,7 +538,13 @@ public class SdkUpdaterNoWindow {
          * @throws IOException in case the buffer isn't long enough.
          */
         private String readLine(byte[] buffer) throws IOException {
-            int count = System.in.read(buffer);
+
+            int count;
+            if (mSdkLog instanceof IReaderLogger) {
+                count = ((IReaderLogger) mSdkLog).readLine(buffer);
+            } else {
+                count = System.in.read(buffer);
+            }
 
             // is the input longer than the buffer?
             if (count == buffer.length && buffer[count-1] != 10) {

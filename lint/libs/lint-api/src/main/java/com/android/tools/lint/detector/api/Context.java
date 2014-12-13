@@ -16,6 +16,11 @@
 
 package com.android.tools.lint.detector.api;
 
+import static com.android.SdkConstants.DOT_GRADLE;
+import static com.android.SdkConstants.DOT_JAVA;
+import static com.android.SdkConstants.DOT_XML;
+import static com.android.SdkConstants.SUPPRESS_ALL;
+
 import com.android.annotations.NonNull;
 import com.android.annotations.Nullable;
 import com.android.tools.lint.client.api.Configuration;
@@ -23,14 +28,11 @@ import com.android.tools.lint.client.api.LintClient;
 import com.android.tools.lint.client.api.LintDriver;
 import com.android.tools.lint.client.api.SdkInfo;
 import com.google.common.annotations.Beta;
-import com.google.common.base.Splitter;
 
 import java.io.File;
 import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.Map;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 
 /**
  * Context passed to the detectors during an analysis run. It provides
@@ -76,6 +78,9 @@ public class Context {
 
     /** Map of properties to share results between detectors */
     private Map<String, Object> mProperties;
+
+    /** Whether this file contains any suppress markers (null means not yet determined) */
+    private Boolean mContainsCommentSuppress;
 
     /**
      * Construct a new {@link Context}
@@ -186,6 +191,7 @@ public class Context {
      * @param name the name of the property
      * @return the corresponding value, or null
      */
+    @SuppressWarnings("UnusedDeclaration") // Used in ADT
     @Nullable
     public Object getProperty(String name) {
         if (mProperties == null) {
@@ -201,6 +207,7 @@ public class Context {
      * @param name the name of the property
      * @param value the corresponding value
      */
+    @SuppressWarnings("UnusedDeclaration") // Used in ADT
     public void setProperty(@NonNull String name, @Nullable Object value) {
         if (value == null) {
             if (mProperties != null) {
@@ -243,13 +250,11 @@ public class Context {
      * @param issue the issue to report
      * @param location the location of the issue, or null if not known
      * @param message the message for this warning
-     * @param data any associated data, or null
      */
     public void report(
             @NonNull Issue issue,
             @Nullable Location location,
-            @NonNull String message,
-            @Nullable Object data) {
+            @NonNull String message) {
         Configuration configuration = mConfiguration;
 
         // If this error was computed for a context where the context corresponds to
@@ -276,7 +281,25 @@ public class Context {
             return;
         }
 
-        mDriver.getClient().report(this, issue, severity, location, message, data);
+        mDriver.getClient().report(this, issue, severity, location, message, TextFormat.RAW);
+    }
+
+    /**
+     * Report an error.
+     * Like {@link #report(Issue, Location, String)} but with
+     * a now-unused data parameter at the end
+     *
+     * @deprecated Use {@link #report(Issue, Location, String)} instead;
+     *    this method is here for custom rule compatibility
+     */
+    @SuppressWarnings("UnusedDeclaration") // Potentially used by external existing custom rules
+    @Deprecated
+    public void report(
+            @NonNull Issue issue,
+            @Nullable Location location,
+            @NonNull String message,
+            @SuppressWarnings("UnusedParameters") @Nullable Object data) {
+        report(issue, location, message);
     }
 
     /**
@@ -322,46 +345,97 @@ public class Context {
         mDriver.requestRepeat(detector, scope);
     }
 
-    /** Pattern for version qualifiers */
-    private static final Pattern VERSION_PATTERN = Pattern.compile("^v(\\d+)$"); //$NON-NLS-1$
+    /** Returns the comment marker used in Studio to suppress statements for language, if any */
+    @Nullable
+    protected String getSuppressCommentPrefix() {
+        // Java and XML files are handled in sub classes (XmlContext, JavaContext)
 
-    private static File sCachedFolder = null;
-    private static int sCachedFolderVersion = -1;
-
-    /**
-     * Returns the folder version. For example, for the file values-v14/foo.xml,
-     * it returns 14.
-     *
-     * @return the folder version, or -1 if no specific version was specified
-     */
-    public int getFolderVersion() {
-        return getFolderVersion(file);
-    }
-
-    /**
-     * Returns the folder version of the given file. For example, for the file values-v14/foo.xml,
-     * it returns 14.
-     *
-     * @param file the file to be checked
-     * @return the folder version, or -1 if no specific version was specified
-     */
-    public static int getFolderVersion(File file) {
-        File parent = file.getParentFile();
-        if (parent.equals(sCachedFolder)) {
-            return sCachedFolderVersion;
+        String path = file.getPath();
+        if (path.endsWith(DOT_JAVA) || path.endsWith(DOT_GRADLE)) {
+            return JavaContext.SUPPRESS_COMMENT_PREFIX;
+        } else if (path.endsWith(DOT_XML)) {
+            return XmlContext.SUPPRESS_COMMENT_PREFIX;
+        } else if (path.endsWith(".cfg") || path.endsWith(".pro")) {
+            return "#suppress ";
         }
 
-        sCachedFolder = parent;
-        sCachedFolderVersion = -1;
+        return null;
+    }
 
-        for (String qualifier : Splitter.on('-').split(parent.getName())) {
-            Matcher matcher = VERSION_PATTERN.matcher(qualifier);
-            if (matcher.matches()) {
-                sCachedFolderVersion = Integer.parseInt(matcher.group(1));
-                break;
+    /** Returns whether this file contains any suppress comment markers */
+    public boolean containsCommentSuppress() {
+        if (mContainsCommentSuppress == null) {
+            mContainsCommentSuppress = false;
+            String prefix = getSuppressCommentPrefix();
+            if (prefix != null) {
+                String contents = getContents();
+                if (contents != null) {
+                    mContainsCommentSuppress = contents.contains(prefix);
+                }
             }
         }
 
-        return sCachedFolderVersion;
+        return mContainsCommentSuppress;
+    }
+
+    /**
+     * Returns true if the given issue is suppressed at the given character offset
+     * in the file's contents
+     */
+    public boolean isSuppressedWithComment(int startOffset, @NonNull Issue issue) {
+        String prefix = getSuppressCommentPrefix();
+        if (prefix == null) {
+            return false;
+        }
+
+        if (startOffset <= 0) {
+            return false;
+        }
+
+        // Check whether there is a comment marker
+        String contents = getContents();
+        assert contents != null; // otherwise we wouldn't be here
+        if (startOffset >= contents.length()) {
+            return false;
+        }
+
+        // Scan backwards to the previous line and see if it contains the marker
+        int lineStart = contents.lastIndexOf('\n', startOffset) + 1;
+        if (lineStart <= 1) {
+            return false;
+        }
+        int index = findPrefixOnPreviousLine(contents, lineStart, prefix);
+        if (index != -1 &&index+prefix.length() < lineStart) {
+                String line = contents.substring(index + prefix.length(), lineStart);
+            return line.contains(issue.getId())
+                    || line.contains(SUPPRESS_ALL) && line.trim().startsWith(SUPPRESS_ALL);
+        }
+
+        return false;
+    }
+
+    private static int findPrefixOnPreviousLine(String contents, int lineStart, String prefix) {
+        // Search backwards on the previous line until you find the prefix start (also look
+        // back on previous lines if the previous line(s) contain just whitespace
+        char first = prefix.charAt(0);
+        int offset = lineStart - 2; // 0: first char on this line, -1: \n on previous line, -2 last
+        boolean seenNonWhitespace = false;
+        for (; offset >= 0; offset--) {
+            char c = contents.charAt(offset);
+            if (seenNonWhitespace && c == '\n') {
+                return -1;
+            }
+
+            if (!seenNonWhitespace && !Character.isWhitespace(c)) {
+                seenNonWhitespace = true;
+            }
+
+            if (c == first && contents.regionMatches(false, offset, prefix, 0,
+                    prefix.length())) {
+                return offset;
+            }
+        }
+
+        return -1;
     }
 }

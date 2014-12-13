@@ -17,26 +17,45 @@
 package com.android.tools.perflib.vmtrace.viz;
 
 import com.android.annotations.NonNull;
+import com.android.annotations.Nullable;
 import com.android.tools.perflib.vmtrace.Call;
+import com.android.tools.perflib.vmtrace.ClockType;
+import com.android.tools.perflib.vmtrace.MethodInfo;
+import com.android.tools.perflib.vmtrace.ThreadInfo;
 import com.android.tools.perflib.vmtrace.VmTraceData;
-import com.android.utils.SparseArray;
 
-import java.awt.*;
-import java.awt.event.*;
+import java.awt.Color;
+import java.awt.Graphics;
+import java.awt.Graphics2D;
+import java.awt.Point;
+import java.awt.RenderingHints;
+import java.awt.event.HierarchyBoundsAdapter;
+import java.awt.event.HierarchyEvent;
+import java.awt.event.MouseEvent;
 import java.awt.geom.AffineTransform;
 import java.awt.geom.NoninvertibleTransformException;
+import java.awt.geom.Point2D;
+import java.util.Set;
+import java.util.concurrent.TimeUnit;
 
-import javax.swing.*;
+import javax.swing.JComponent;
+import javax.swing.ToolTipManager;
+import javax.swing.UIManager;
 
 /**
  * A canvas that displays the call hierarchy for a single thread. The trace and the the thread to be
- * displayed are specified using {@link #setTrace(com.android.tools.perflib.vmtrace.VmTraceData,
- * String)} and {@link #displayThread(String)} methods.
+ * displayed are specified using {@link #setTrace} and {@link #displayThread} methods.
  */
 public class TraceViewCanvas extends JComponent {
-    private static final Color BACKGROUND_COLOR = Color.LIGHT_GRAY;
-
+    private static final Color BACKGROUND_COLOR =
+            UIManager.getLookAndFeelDefaults().getColor("EditorPane.background");
     private static final int TOOLTIP_OFFSET = 10;
+
+    /**
+     * The time unit to use for all operations. Changing this changes the minimum resolution
+     * that can be viewed on the canvas.
+     */
+    private static final TimeUnit DEFAULT_TIME_UNITS = TimeUnit.NANOSECONDS;
 
     /**
      * Interactor that listens to mouse events, interprets them as zoom/pan events, and provides the
@@ -52,11 +71,12 @@ public class TraceViewCanvas extends JComponent {
 
     private VmTraceData mTraceData;
     private Call mTopLevelCall;
+    private RenderContext mRenderContext;
 
     private TimeScaleRenderer mTimeScaleRenderer;
     private CallHierarchyRenderer mCallHierarchyRenderer;
 
-    private final Point mTmpPoint = new Point();
+    private final Point2D mTmpPoint = new Point2D.Double();
 
     public TraceViewCanvas() {
         mViewPortTransform = new AffineTransform();
@@ -76,8 +96,8 @@ public class TraceViewCanvas extends JComponent {
 
         addMouseMotionListener(ToolTipManager.sharedInstance());
 
-        // Listen for the first hierarchy bounds change so as to get the initial width.
-        // Zoom fit if possible once we know the width.
+        // Listen for the first hierarchy bounds change so as to get the initial width,
+        // and then zoom fit once we know the width.
         addHierarchyBoundsListener(new HierarchyBoundsAdapter() {
             @Override
             public void ancestorMoved(HierarchyEvent e) {
@@ -91,39 +111,58 @@ public class TraceViewCanvas extends JComponent {
         });
     }
 
-    public void setTrace(@NonNull VmTraceData traceData, @NonNull String threadName) {
+    public void setTrace(@NonNull VmTraceData traceData, @NonNull ThreadInfo thread,
+            ClockType renderClock) {
         mTraceData = traceData;
-        displayThread(threadName);
+        mRenderContext = new RenderContext(traceData, renderClock);
+        displayThread(thread);
     }
 
-    public void displayThread(@NonNull String threadName) {
+    public void displayThread(@NonNull ThreadInfo thread) {
         mCallHierarchyRenderer = null;
         mTimeScaleRenderer = null;
 
-        int threadId = findThreadIdFromName(threadName);
-        if (threadId < 0) {
+        if (mTraceData == null) {
             return;
         }
-        mTopLevelCall = mTraceData.getTopLevelCall(threadId);
+
+        mTopLevelCall = thread.getTopLevelCall();
         if (mTopLevelCall == null) {
             return;
         }
 
-        mTimeScaleRenderer = new TimeScaleRenderer(mTopLevelCall.getEntryGlobalTime(),
-                mTraceData.getTimeUnits());
+        mTimeScaleRenderer = new TimeScaleRenderer(
+                mTopLevelCall.getEntryTime(ClockType.GLOBAL, DEFAULT_TIME_UNITS),
+                DEFAULT_TIME_UNITS);
         int yOffset = mTimeScaleRenderer.getLayoutHeight();
-        mCallHierarchyRenderer = new CallHierarchyRenderer(mTraceData, mTopLevelCall, yOffset);
+        mCallHierarchyRenderer = new CallHierarchyRenderer(mTraceData, thread, yOffset,
+                DEFAULT_TIME_UNITS, mRenderContext);
 
         zoomFit();
     }
 
-    private void zoomFit() {
+    public void setRenderClock(ClockType clock) {
+        mRenderContext.setRenderClock(clock);
+        repaint();
+    }
+
+    public void setUseInclusiveTimeForColorAssignment(boolean en) {
+        mRenderContext.setUseInclusiveTimeForColorAssignment(en);
+        repaint();
+    }
+
+    public void setHighlightMethods(@Nullable Set<MethodInfo> methods) {
+        mRenderContext.setHighlightedMethods(methods);
+        repaint();
+    }
+
+    public void zoomFit() {
         if (mTopLevelCall == null) {
             return;
         }
 
-        long start = mTopLevelCall.getEntryGlobalTime();
-        long end = mTopLevelCall.getExitGlobalTime();
+        long start = mTopLevelCall.getEntryTime(ClockType.GLOBAL, DEFAULT_TIME_UNITS);
+        long end = mTopLevelCall.getExitTime(ClockType.GLOBAL, DEFAULT_TIME_UNITS);
 
         // Scale so that the full trace occupies 90% of the screen width.
         double width = getWidth();
@@ -141,17 +180,6 @@ public class TraceViewCanvas extends JComponent {
         updateViewPortTransform(mZoomPanInteractor.getTransform());
     }
 
-    private int findThreadIdFromName(String threadName) {
-        SparseArray<String> threads = mTraceData.getThreads();
-        for (int i = 0; i < threads.size(); i++) {
-            if (threads.valueAt(i).equalsIgnoreCase(threadName)) {
-                return threads.keyAt(i);
-            }
-        }
-
-        return -1;
-    }
-
     @Override
     protected void paintComponent(Graphics g) {
         Graphics2D g2d = (Graphics2D) g;
@@ -165,24 +193,14 @@ public class TraceViewCanvas extends JComponent {
             return;
         }
 
-        // Obtain the current screen transformation for this component. This transformation
-        // could be changed without any events being generated (e.g. screen transformation is
-        // changed when a tooltip is displayed inside a container
-        AffineTransform screenTransform = g2d.getTransform();
-
-        // set the viewport * screen space transform
-        AffineTransform transform = new AffineTransform(screenTransform);
-        transform.concatenate(mViewPortTransform);
-        g2d.setTransform(transform);
-
         // paint stack layout view
         if (mCallHierarchyRenderer != null) {
-            mCallHierarchyRenderer.render(g2d);
+            mCallHierarchyRenderer.render(g2d, mViewPortTransform);
         }
 
         // paint timeline at top
         if (mTimeScaleRenderer != null) {
-            mTimeScaleRenderer.paint(g2d, screenTransform, mViewPortTransform, getWidth());
+            mTimeScaleRenderer.paint(g2d, mViewPortTransform, getWidth());
         }
     }
 
@@ -203,7 +221,7 @@ public class TraceViewCanvas extends JComponent {
 
         mTmpPoint.setLocation(event.getPoint());
         mViewPortInverseTransform.transform(mTmpPoint, mTmpPoint);
-        return mCallHierarchyRenderer.getToolTipFor(mTmpPoint.x, mTmpPoint.y);
+        return mCallHierarchyRenderer.getToolTipFor(mTmpPoint.getX(), mTmpPoint.getY());
     }
 
     @Override

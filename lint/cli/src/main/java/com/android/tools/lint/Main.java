@@ -18,12 +18,19 @@ package com.android.tools.lint;
 
 import static com.android.SdkConstants.DOT_XML;
 import static com.android.SdkConstants.VALUE_NONE;
-import static com.android.tools.lint.detector.api.Issue.OutputFormat.TEXT;
+import static com.android.tools.lint.LintCliFlags.ERRNO_ERRORS;
+import static com.android.tools.lint.LintCliFlags.ERRNO_EXISTS;
+import static com.android.tools.lint.LintCliFlags.ERRNO_HELP;
+import static com.android.tools.lint.LintCliFlags.ERRNO_INVALID_ARGS;
+import static com.android.tools.lint.LintCliFlags.ERRNO_SUCCESS;
+import static com.android.tools.lint.LintCliFlags.ERRNO_USAGE;
 import static com.android.tools.lint.detector.api.LintUtils.endsWith;
+import static com.android.tools.lint.detector.api.TextFormat.TEXT;
 
 import com.android.annotations.NonNull;
 import com.android.annotations.Nullable;
 import com.android.tools.lint.checks.BuiltinIssueRegistry;
+import com.android.tools.lint.client.api.Configuration;
 import com.android.tools.lint.client.api.IssueRegistry;
 import com.android.tools.lint.detector.api.Category;
 import com.android.tools.lint.detector.api.Context;
@@ -31,6 +38,8 @@ import com.android.tools.lint.detector.api.Issue;
 import com.android.tools.lint.detector.api.LintUtils;
 import com.android.tools.lint.detector.api.Location;
 import com.android.tools.lint.detector.api.Project;
+import com.android.tools.lint.detector.api.Severity;
+import com.android.tools.lint.detector.api.TextFormat;
 import com.android.utils.SdkUtils;
 import com.google.common.annotations.Beta;
 
@@ -91,13 +100,8 @@ public class Main {
 
     private static final String PROP_WORK_DIR = "com.android.tools.lint.workdir"; //$NON-NLS-1$
 
-    private static final int ERRNO_ERRORS = 1;
-    private static final int ERRNO_USAGE = 2;
-    private static final int ERRNO_EXISTS = 3;
-    private static final int ERRNO_HELP = 4;
-    private static final int ERRNO_INVALID_ARGS = 5;
-
     private LintCliFlags mFlags = new LintCliFlags();
+    private IssueRegistry mGlobalRegistry;
 
     /** Creates a CLI driver */
     public Main() {
@@ -124,7 +128,6 @@ public class Main {
             System.exit(ERRNO_USAGE);
         }
 
-        IssueRegistry registry = new BuiltinIssueRegistry();
 
         // When running lint from the command line, warn if the project is a Gradle project
         // since those projects may have custom project configuration that the command line
@@ -136,16 +139,52 @@ public class Main {
                 Project project = super.createProject(dir, referenceDir);
                 if (project.isGradleProject()) {
                     @SuppressWarnings("SpellCheckingInspection")
-                    String message = String.format("\"%1$s\" is a Gradle project. To correctly "
-                            + "analyze Gradle projects, you should run \"gradlew :lint\" instead.",
+                    String message = String.format("\"`%1$s`\" is a Gradle project. To correctly "
+                            + "analyze Gradle projects, you should run \"`gradlew :lint`\" instead.",
                             project.getName());
                     Location location = Location.create(project.getDir());
-                    report(new Context(mDriver, project, project, project.getDir()),
-                            IssueRegistry.LINT_ERROR,
-                            project.getConfiguration().getSeverity(IssueRegistry.LINT_ERROR),
-                            location, message, null);
+                    Context context = new Context(mDriver, project, project, project.getDir());
+                    if (context.isEnabled(IssueRegistry.LINT_ERROR) &&
+                            !getConfiguration(project).isIgnored(context, IssueRegistry.LINT_ERROR,
+                            location, message)) {
+                        report(context,
+                               IssueRegistry.LINT_ERROR,
+                               project.getConfiguration().getSeverity(IssueRegistry.LINT_ERROR),
+                               location, message, TextFormat.RAW);
+                    }
                 }
                 return project;
+            }
+
+            @Override
+            public Configuration getConfiguration(@NonNull final Project project) {
+                if (project.isGradleProject()) {
+                    // Don't report any issues when analyzing a Gradle project from the
+                    // non-Gradle runner; they are likely to be false, and will hide the real
+                    // problem reported above
+                   return new CliConfiguration(getConfiguration(), project, true) {
+                       @NonNull
+                       @Override
+                       public Severity getSeverity(@NonNull Issue issue) {
+                           return issue == IssueRegistry.LINT_ERROR
+                                   ? Severity.FATAL : Severity.IGNORE;
+                       }
+
+                       @Override
+                       public boolean isIgnored(@NonNull Context context, @NonNull Issue issue,
+                               @Nullable Location location, @NonNull String message) {
+                           // If you've deliberately ignored IssueRegistry.LINT_ERROR
+                           // don't flag that one either
+                           if (issue == IssueRegistry.LINT_ERROR && new LintCliClient(mFlags).isSuppressed(
+                                   IssueRegistry.LINT_ERROR)) {
+                               return true;
+                           }
+
+                           return issue != IssueRegistry.LINT_ERROR;
+                       }
+                   };
+                }
+                return super.getConfiguration(project);
             }
         };
 
@@ -171,6 +210,7 @@ public class Main {
                 printUsage(System.out);
                 System.exit(ERRNO_HELP);
             } else if (arg.equals(ARG_LIST_IDS)) {
+                IssueRegistry registry = getGlobalRegistry(client);
                 // Did the user provide a category list?
                 if (index < args.length - 1 && !args[index + 1].startsWith("-")) { //$NON-NLS-1$
                     String[] ids = args[++index].split(",");
@@ -195,8 +235,9 @@ public class Main {
                 } else {
                     displayValidIds(registry, System.out);
                 }
-                System.exit(0);
+                System.exit(ERRNO_SUCCESS);
             } else if (arg.equals(ARG_SHOW)) {
+                IssueRegistry registry = getGlobalRegistry(client);
                 // Show specific issues?
                 if (index < args.length - 1 && !args[index + 1].startsWith("-")) { //$NON-NLS-1$
                     String[] ids = args[++index].split(",");
@@ -225,7 +266,7 @@ public class Main {
                 } else {
                     showIssues(registry);
                 }
-                System.exit(0);
+                System.exit(ERRNO_SUCCESS);
             } else if (arg.equals(ARG_FULL_PATH)
                     || arg.equals(ARG_FULL_PATH + "s")) { // allow "--fullpaths" too
                 mFlags.setFullPath(true);
@@ -239,7 +280,7 @@ public class Main {
                 mFlags.setSetExitCode(true);
             } else if (arg.equals(ARG_VERSION)) {
                 printVersion(client);
-                System.exit(0);
+                System.exit(ERRNO_SUCCESS);
             } else if (arg.equals(ARG_URL)) {
                 if (index == args.length - 1) {
                     System.err.println("Missing URL mapping string");
@@ -262,7 +303,7 @@ public class Main {
                     System.err.println(file.getAbsolutePath() + " does not exist");
                     System.exit(ERRNO_INVALID_ARGS);
                 }
-                mFlags.setDefaultConfiguration(client.createConfigurationFromFile(file));
+                mFlags.setDefaultConfiguration(file);
             } else if (arg.equals(ARG_HTML) || arg.equals(ARG_SIMPLE_HTML)) {
                 if (index == args.length - 1) {
                     System.err.println("Missing HTML output file name");
@@ -344,7 +385,7 @@ public class Main {
                 }
             } else if (arg.equals(ARG_TEXT)) {
                 if (index == args.length - 1) {
-                    System.err.println("Missing XML output file name");
+                    System.err.println("Missing text output file name");
                     System.exit(ERRNO_INVALID_ARGS);
                 }
 
@@ -352,6 +393,7 @@ public class Main {
                 boolean closeWriter;
                 String outputName = args[++index];
                 if (outputName.equals("stdout")) { //$NON-NLS-1$
+                    //noinspection IOResourceOpenedButNotSafelyClosed
                     writer = new PrintWriter(System.out, true);
                     closeWriter = false;
                 } else {
@@ -373,6 +415,7 @@ public class Main {
                         System.exit(ERRNO_EXISTS);
                     }
                     try {
+                        //noinspection IOResourceOpenedButNotSafelyClosed
                         writer = new BufferedWriter(new FileWriter(output));
                     } catch (IOException e) {
                         log(e, null);
@@ -380,12 +423,13 @@ public class Main {
                     }
                     closeWriter = true;
                 }
-                mFlags.getReporters().add(new TextReporter(client, writer, closeWriter));
+                mFlags.getReporters().add(new TextReporter(client, mFlags, writer, closeWriter));
             } else if (arg.equals(ARG_DISABLE) || arg.equals(ARG_IGNORE)) {
                 if (index == args.length - 1) {
                     System.err.println("Missing categories or id's to disable");
                     System.exit(ERRNO_INVALID_ARGS);
                 }
+                IssueRegistry registry = getGlobalRegistry(client);
                 String[] ids = args[++index].split(",");
                 for (String id : ids) {
                     if (registry.isCategoryName(id)) {
@@ -412,6 +456,7 @@ public class Main {
                     System.err.println("Missing categories or id's to enable");
                     System.exit(ERRNO_INVALID_ARGS);
                 }
+                IssueRegistry registry = getGlobalRegistry(client);
                 String[] ids = args[++index].split(",");
                 for (String id : ids) {
                     if (registry.isCategoryName(id)) {
@@ -441,6 +486,7 @@ public class Main {
                     checkedIds = new HashSet<String>();
                     mFlags.setExactCheckedIds(checkedIds);
                 }
+                IssueRegistry registry = getGlobalRegistry(client);
                 String[] ids = args[++index].split(",");
                 for (String id : ids) {
                     if (registry.isCategoryName(id)) {
@@ -576,54 +622,63 @@ public class Main {
 
         List<Reporter> reporters = mFlags.getReporters();
         if (reporters.isEmpty()) {
+            //noinspection VariableNotUsedInsideIf
             if (urlMap != null) {
                 System.err.println(String.format(
                         "Warning: The %1$s option only applies to HTML reports (%2$s)",
                             ARG_URL, ARG_HTML));
             }
 
-            reporters.add(new TextReporter(client, new PrintWriter(System.out, true), false));
+            reporters.add(new TextReporter(client, mFlags,
+                    new PrintWriter(System.out, true), false));
         } else {
-            if (urlMap == null) {
-                // By default just map from /foo to file:///foo
-                // TODO: Find out if we need file:// on Windows.
-                urlMap = "=file://"; //$NON-NLS-1$
-            } else {
+            //noinspection VariableNotUsedInsideIf
+            if (urlMap != null) {
                 for (Reporter reporter : reporters) {
                     if (!reporter.isSimpleFormat()) {
                         reporter.setBundleResources(true);
                     }
                 }
-            }
 
-            if (!urlMap.equals(VALUE_NONE)) {
-                Map<String, String> map = new HashMap<String, String>();
-                String[] replace = urlMap.split(","); //$NON-NLS-1$
-                for (String s : replace) {
-                    // Allow ='s in the suffix part
-                    int index = s.indexOf('=');
-                    if (index == -1) {
-                        System.err.println(
-                            "The URL map argument must be of the form 'path_prefix=url_prefix'");
-                        System.exit(ERRNO_INVALID_ARGS);
+                if (!urlMap.equals(VALUE_NONE)) {
+                    Map<String, String> map = new HashMap<String, String>();
+                    String[] replace = urlMap.split(","); //$NON-NLS-1$
+                    for (String s : replace) {
+                        // Allow ='s in the suffix part
+                        int index = s.indexOf('=');
+                        if (index == -1) {
+                            System.err.println(
+                              "The URL map argument must be of the form 'path_prefix=url_prefix'");
+                            System.exit(ERRNO_INVALID_ARGS);
+                        }
+                        String key = s.substring(0, index);
+                        String value = s.substring(index + 1);
+                        map.put(key, value);
                     }
-                    String key = s.substring(0, index);
-                    String value = s.substring(index + 1);
-                    map.put(key, value);
-                }
-                for (Reporter reporter : reporters) {
-                    reporter.setUrlMap(map);
+                    for (Reporter reporter : reporters) {
+                        reporter.setUrlMap(map);
+                    }
                 }
             }
         }
 
         try {
-            int exitCode = client.run(registry, files);
+            // Not using mGlobalRegistry; LintClient will do its own registry merging
+            // also including project rules.
+            int exitCode = client.run(new BuiltinIssueRegistry(), files);
             System.exit(exitCode);
         } catch (IOException e) {
             log(e, null);
             System.exit(ERRNO_INVALID_ARGS);
         }
+    }
+
+    private IssueRegistry getGlobalRegistry(LintCliClient client) {
+        if (mGlobalRegistry == null) {
+            mGlobalRegistry = client.addCustomLintRules(new BuiltinIssueRegistry());
+        }
+
+        return mGlobalRegistry;
     }
 
     /**
@@ -766,7 +821,7 @@ public class Main {
             "\"lint --ignore UnusedResources,UselessLeaf /my/project/path\"\n";
     }
 
-    private void printVersion(LintCliClient client) {
+    private static void printVersion(LintCliClient client) {
         String revision = client.getRevision();
         if (revision != null) {
             System.out.println(String.format("lint: version %1$s", revision));
@@ -790,7 +845,7 @@ public class Main {
     }
 
     private static void listIssue(PrintStream out, Issue issue) {
-        out.print(wrapArg("\"" + issue.getId() + "\": " + issue.getDescription(TEXT)));
+        out.print(wrapArg("\"" + issue.getId() + "\": " + issue.getBriefDescription(TEXT)));
     }
 
     private static void showIssues(IssueRegistry registry) {
@@ -837,7 +892,7 @@ public class Main {
             System.out.print('-');
         }
         System.out.println();
-        System.out.println(wrap("Summary: " + issue.getDescription(TEXT)));
+        System.out.println(wrap("Summary: " + issue.getBriefDescription(TEXT)));
         System.out.println("Priority: " + issue.getPriority() + " / 10");
         System.out.println("Severity: " + issue.getDefaultSeverity().getDescription());
         System.out.println("Category: " + issue.getCategory().getFullName());

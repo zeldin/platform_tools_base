@@ -20,6 +20,7 @@ import static com.android.SdkConstants.ANDROID_LIBRARY;
 import static com.android.SdkConstants.ANDROID_LIBRARY_REFERENCE_FORMAT;
 import static com.android.SdkConstants.ANDROID_MANIFEST_XML;
 import static com.android.SdkConstants.ANDROID_URI;
+import static com.android.SdkConstants.APPCOMPAT_LIB_ARTIFACT;
 import static com.android.SdkConstants.ATTR_MIN_SDK_VERSION;
 import static com.android.SdkConstants.ATTR_PACKAGE;
 import static com.android.SdkConstants.ATTR_TARGET_SDK_VERSION;
@@ -28,12 +29,20 @@ import static com.android.SdkConstants.OLD_PROGUARD_FILE;
 import static com.android.SdkConstants.PROGUARD_CONFIG;
 import static com.android.SdkConstants.PROJECT_PROPERTIES;
 import static com.android.SdkConstants.RES_FOLDER;
+import static com.android.SdkConstants.SUPPORT_LIB_ARTIFACT;
 import static com.android.SdkConstants.TAG_USES_SDK;
 import static com.android.SdkConstants.VALUE_TRUE;
+import static com.android.sdklib.SdkVersionInfo.HIGHEST_KNOWN_API;
 
+import com.android.SdkConstants;
 import com.android.annotations.NonNull;
 import com.android.annotations.Nullable;
-import com.android.ide.common.sdk.SdkVersionInfo;
+import com.android.builder.model.AndroidLibrary;
+import com.android.builder.model.AndroidProject;
+import com.android.builder.model.Variant;
+import com.android.sdklib.AndroidVersion;
+import com.android.sdklib.IAndroidTarget;
+import com.android.sdklib.SdkVersionInfo;
 import com.android.tools.lint.client.api.CircularDependencyException;
 import com.android.tools.lint.client.api.Configuration;
 import com.android.tools.lint.client.api.LintClient;
@@ -42,6 +51,7 @@ import com.google.common.annotations.Beta;
 import com.google.common.base.CharMatcher;
 import com.google.common.base.Charsets;
 import com.google.common.base.Splitter;
+import com.google.common.collect.Lists;
 import com.google.common.collect.Sets;
 import com.google.common.io.Closeables;
 import com.google.common.io.Files;
@@ -77,9 +87,12 @@ public class Project {
     protected final File mReferenceDir;
     protected Configuration mConfiguration;
     protected String mPackage;
-    protected int mMinSdk = 1;
-    protected int mTargetSdk = -1;
     protected int mBuildSdk = -1;
+    protected IAndroidTarget mTarget;
+
+    protected AndroidVersion mManifestMinSdk = AndroidVersion.DEFAULT;
+    protected AndroidVersion mManifestTargetSdk = AndroidVersion.DEFAULT;
+
     protected boolean mLibrary;
     protected String mName;
     protected String mProguardPath;
@@ -94,6 +107,7 @@ public class Project {
      */
     protected List<File> mFiles;
     protected List<File> mProguardFiles;
+    protected List<File> mGradleFiles;
     protected List<File> mManifestFiles;
     protected List<File> mJavaSourceFolders;
     protected List<File> mJavaClassFolders;
@@ -103,6 +117,8 @@ public class Project {
     protected List<Project> mAllLibraries;
     protected boolean mReportIssues = true;
     protected Boolean mGradleProject;
+    protected Boolean mSupportLib;
+    protected Boolean mAppCompat;
 
     /**
      * Creates a new {@link Project} for the given directory.
@@ -133,6 +149,53 @@ public class Project {
         return mGradleProject;
     }
 
+    /**
+     * Returns true if this project is an Android project.
+     *
+     * @return true if this project is an Android project.
+     */
+    @SuppressWarnings("MethodMayBeStatic")
+    public boolean isAndroidProject() {
+        return true;
+    }
+
+    /**
+     * Returns the project model for this project if it corresponds to
+     * a Gradle project. This is the case if {@link #isGradleProject()}
+     * is true and {@link #isLibrary()} is false.
+     *
+     * @return the project model, or null
+     */
+    @Nullable
+    public AndroidProject getGradleProjectModel() {
+        return null;
+    }
+
+    /**
+     * Returns the project model for this project if it corresponds to
+     * a Gradle library. This is the case if both
+     * {@link #isGradleProject()} and {@link #isLibrary()} return true.
+     *
+     * @return the project model, or null
+     */
+    @Nullable
+    public AndroidLibrary getGradleLibraryModel() {
+        return null;
+    }
+
+    /**
+     * Returns the current selected variant, if any (and if the current project is a Gradle
+     * project). This can be used by incremental lint rules to warn about problems in the current
+     * context. Lint rules should however strive to perform cross variant analysis and warn about
+     * problems in any configuration.
+     *
+     * @return the select variant, or null
+     */
+    @Nullable
+    public Variant getCurrentVariant() {
+        return null;
+    }
+
     /** Creates a new Project. Use one of the factory methods to create. */
     protected Project(
             @NonNull LintClient client,
@@ -151,7 +214,6 @@ public class Project {
             Properties properties = new Properties();
             File propFile = new File(mDir, PROJECT_PROPERTIES);
             if (propFile.exists()) {
-                @SuppressWarnings("resource") // Eclipse doesn't know about Closeables.closeQuietly
                 BufferedInputStream is = new BufferedInputStream(new FileInputStream(propFile));
                 try {
                     properties.load(is);
@@ -228,7 +290,11 @@ public class Project {
                         }
                     }
                 } finally {
-                    Closeables.closeQuietly(is);
+                    try {
+                        Closeables.close(is, true /* swallowIOException */);
+                    } catch (IOException e) {
+                        // cannot happen
+                    }
                 }
             }
         } catch (IOException ioe) {
@@ -383,7 +449,7 @@ public class Project {
 
             if (folders.size() == 1 && isAospFrameworksProject(mDir)) {
                 // No manifest file for this project: just init the manifest values here
-                mMinSdk = mTargetSdk = SdkVersionInfo.HIGHEST_KNOWN_API;
+                mManifestMinSdk = mManifestTargetSdk = new AndroidVersion(HIGHEST_KNOWN_API, null);
                 File folder = new File(folders.get(0), RES_FOLDER);
                 if (!folder.exists()) {
                     folders = Collections.emptyList();
@@ -494,29 +560,48 @@ public class Project {
     }
 
     /**
-     * Returns the minimum API level requested by the manifest, or -1 if not
-     * specified
+     * Returns the minimum API level for the project
+     *
+     * @return the minimum API level or {@link AndroidVersion#DEFAULT} if unknown
+     */
+    @NonNull
+    public AndroidVersion getMinSdkVersion() {
+        return mManifestMinSdk == null ? AndroidVersion.DEFAULT : mManifestMinSdk;
+    }
+
+    /**
+     * Returns the minimum API <b>level</b> requested by the manifest, or -1 if not
+     * specified. Use {@link #getMinSdkVersion()} to get a full version if you need
+     * to check if the platform is a preview platform etc.
      *
      * @return the minimum API level or -1 if unknown
      */
     public int getMinSdk() {
-        //assert !mLibrary; // Should call getMinSdk on the master project, not the library
-        // Assertion disabled because you might be running lint on a standalone library project.
-
-        return mMinSdk;
+        AndroidVersion version = getMinSdkVersion();
+        return version == AndroidVersion.DEFAULT ? -1 : version.getApiLevel();
     }
 
     /**
-     * Returns the target API level specified by the manifest, or -1 if not
-     * specified
+     * Returns the target API level for the project
+     *
+     * @return the target API level or {@link AndroidVersion#DEFAULT} if unknown
+     */
+    @NonNull
+    public AndroidVersion getTargetSdkVersion() {
+        return mManifestTargetSdk == AndroidVersion.DEFAULT
+                ? getMinSdkVersion() : mManifestTargetSdk;
+    }
+
+    /**
+     * Returns the target API <b>level</b> specified by the manifest, or -1 if not
+     * specified. Use {@link #getTargetSdkVersion()} to get a full version if you need
+     * to check if the platform is a preview platform etc.
      *
      * @return the target API level or -1 if unknown
      */
     public int getTargetSdk() {
-        //assert !mLibrary; // Should call getTargetSdk on the master project, not the library
-        // Assertion disabled because you might be running lint on a standalone library project.
-
-        return mTargetSdk;
+        AndroidVersion version = getTargetSdkVersion();
+        return version == AndroidVersion.DEFAULT ? -1 : version.getApiLevel();
     }
 
     /**
@@ -526,6 +611,20 @@ public class Project {
      */
     public int getBuildSdk() {
         return mBuildSdk;
+    }
+
+    /**
+     * Returns the target used to build the project, or null if not known
+     *
+     * @return the build target, or null
+     */
+    @Nullable
+    public IAndroidTarget getBuildTarget() {
+        if (mTarget == null) {
+            mTarget = mClient.getCompileTarget(this);
+        }
+
+        return mTarget;
     }
 
     /**
@@ -541,7 +640,17 @@ public class Project {
 
         mPackage = root.getAttribute(ATTR_PACKAGE);
 
+        // Treat support libraries as non-reportable (in Eclipse where we don't
+        // have binary libraries, the support libraries have to be source-copied into
+        // the workspace which then triggers warnings in these libraries that users
+        // shouldn't have to investigate)
+        if (mPackage != null && mPackage.startsWith("android.support.")) {
+            mReportIssues = false;
+        }
+
         // Initialize minSdk and targetSdk
+        mManifestMinSdk = AndroidVersion.DEFAULT;
+        mManifestTargetSdk = AndroidVersion.DEFAULT;
         NodeList usesSdks = root.getElementsByTagName(TAG_USES_SDK);
         if (usesSdks.getLength() > 0) {
             Element element = (Element) usesSdks.item(0);
@@ -551,29 +660,22 @@ public class Project {
                 minSdk = element.getAttributeNS(ANDROID_URI, ATTR_MIN_SDK_VERSION);
             }
             if (minSdk != null) {
-                try {
-                    mMinSdk = Integer.valueOf(minSdk);
-                } catch (NumberFormatException e) {
-                    // Codename?
-                    mMinSdk = SdkVersionInfo.getApiByPreviewName(minSdk, true);
-                }
+                IAndroidTarget[] targets = mClient.getTargets();
+                mManifestMinSdk = SdkVersionInfo.getVersion(minSdk, targets);
             }
 
-            String targetSdk = null;
             if (element.hasAttributeNS(ANDROID_URI, ATTR_TARGET_SDK_VERSION)) {
-                targetSdk = element.getAttributeNS(ANDROID_URI, ATTR_TARGET_SDK_VERSION);
-            } else if (minSdk != null) {
-                targetSdk = minSdk;
-            }
-            if (targetSdk != null) {
-                try {
-                    mTargetSdk = Integer.valueOf(targetSdk);
-                } catch (NumberFormatException e) {
-                    mTargetSdk = SdkVersionInfo.getApiByPreviewName(minSdk, false);
+                String targetSdk = element.getAttributeNS(ANDROID_URI, ATTR_TARGET_SDK_VERSION);
+                if (targetSdk != null) {
+                    IAndroidTarget[] targets = mClient.getTargets();
+                    mManifestTargetSdk = SdkVersionInfo.getVersion(targetSdk, targets);
                 }
+            } else {
+                mManifestTargetSdk = mManifestMinSdk;
             }
         } else if (isAospBuildEnvironment()) {
             extractAospMinSdkVersion();
+            mManifestTargetSdk = mManifestMinSdk;
         }
     }
 
@@ -724,6 +826,32 @@ public class Project {
     }
 
     /**
+     * Returns the Gradle build script files configured for this project, if any
+     *
+     * @return the Gradle files, if any
+     */
+    @NonNull
+    public List<File> getGradleBuildScripts() {
+        if (mGradleFiles == null) {
+            if (isGradleProject()) {
+                mGradleFiles = Lists.newArrayListWithExpectedSize(2);
+                File build = new File(mDir, SdkConstants.FN_BUILD_GRADLE);
+                if (build.exists()) {
+                    mGradleFiles.add(build);
+                }
+                File settings = new File(mDir, SdkConstants.FN_SETTINGS_GRADLE);
+                if (settings.exists()) {
+                    mGradleFiles.add(settings);
+                }
+            } else {
+                mGradleFiles = Collections.emptyList();
+            }
+        }
+
+        return mGradleFiles;
+    }
+
+    /**
      * Returns the name of the project
      *
      * @return the name of the project, never null
@@ -805,7 +933,7 @@ public class Project {
             sAospBuild = getAospTop() != null;
         }
 
-        return sAospBuild.booleanValue();
+        return sAospBuild;
     }
 
     /**
@@ -948,14 +1076,10 @@ public class Project {
                         found = true;
                         String version = matcher.group(1);
                         if (version.equals("current")) { //$NON-NLS-1$
-                            mMinSdk = findCurrentAospVersion();
+                            mManifestMinSdk = findCurrentAospVersion();
                         } else {
-                            try {
-                                mMinSdk = Integer.valueOf(version);
-                            } catch (NumberFormatException e) {
-                                // Codename - just use current
-                                mMinSdk = findCurrentAospVersion();
-                            }
+                            mManifestMinSdk = SdkVersionInfo.getVersion(version,
+                                    mClient.getTargets());
                         }
                         break;
                     }
@@ -966,21 +1090,21 @@ public class Project {
         }
 
         if (!found) {
-            mMinSdk = findCurrentAospVersion();
+            mManifestMinSdk = findCurrentAospVersion();
         }
     }
 
     /** Cache for {@link #findCurrentAospVersion()} */
-    private static int sCurrentVersion;
+    private static AndroidVersion sCurrentVersion;
 
     /** In an AOSP build environment, identify the currently built image version, if available */
-    private static int findCurrentAospVersion() {
-        if (sCurrentVersion < 1) {
+    private static AndroidVersion findCurrentAospVersion() {
+        if (sCurrentVersion == null) {
             File apiDir = new File(getAospTop(), "frameworks/base/api" //$NON-NLS-1$
                     .replace('/', File.separatorChar));
             File[] apiFiles = apiDir.listFiles();
             if (apiFiles == null) {
-                sCurrentVersion = 1;
+                sCurrentVersion = AndroidVersion.DEFAULT;
                 return sCurrentVersion;
             }
             int max = 1;
@@ -1001,9 +1125,75 @@ public class Project {
                     }
                 }
             }
-            sCurrentVersion = max;
+            sCurrentVersion = new AndroidVersion(max, null);
         }
 
         return sCurrentVersion;
+    }
+
+    /**
+     * Returns true if this project depends on the given artifact. Note that
+     * the project doesn't have to be a Gradle project; the artifact is just
+     * an identifier for name a specific library, such as com.android.support:support-v4
+     * to identify the support library
+     *
+     * @param artifact the Gradle/Maven name of a library
+     * @return true if the library is installed, false if it is not, and null if
+     *   we're not sure
+     */
+    @Nullable
+    public Boolean dependsOn(@NonNull String artifact) {
+        if (SUPPORT_LIB_ARTIFACT.equals(artifact)) {
+            if (mSupportLib == null) {
+                for (File file : getJavaLibraries()) {
+                    String name = file.getName();
+                    if (name.equals("android-support-v4.jar")      //$NON-NLS-1$
+                            || name.startsWith("support-v4-")) {   //$NON-NLS-1$
+                        mSupportLib = true;
+                        break;
+                    }
+                }
+                if (mSupportLib == null) {
+                    for (Project dependency : getDirectLibraries()) {
+                        Boolean b = dependency.dependsOn(artifact);
+                        if (b != null && b) {
+                            mSupportLib = true;
+                            break;
+                        }
+                    }
+                }
+                if (mSupportLib == null) {
+                    mSupportLib = false;
+                }
+            }
+
+            return mSupportLib;
+        } else if (APPCOMPAT_LIB_ARTIFACT.equals(artifact)) {
+            if (mAppCompat == null) {
+                for (File file : getJavaLibraries()) {
+                    String name = file.getName();
+                    if (name.startsWith("appcompat-v7-")) { //$NON-NLS-1$
+                        mAppCompat = true;
+                        break;
+                    }
+                }
+                if (mAppCompat == null) {
+                    for (Project dependency : getDirectLibraries()) {
+                        Boolean b = dependency.dependsOn(artifact);
+                        if (b != null && b) {
+                            mAppCompat = true;
+                            break;
+                        }
+                    }
+                }
+                if (mAppCompat == null) {
+                    mAppCompat = false;
+                }
+            }
+
+            return mAppCompat;
+        }
+
+        return null;
     }
 }

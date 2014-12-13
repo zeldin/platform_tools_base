@@ -20,7 +20,8 @@ import com.android.annotations.NonNull;
 import com.android.ide.common.internal.WaitableExecutor;
 
 import java.io.File;
-import java.util.concurrent.ExecutionException;
+
+import javax.xml.parsers.DocumentBuilderFactory;
 
 /**
  * A {@link MergeConsumer} that writes the result on the disk.
@@ -34,11 +35,11 @@ public abstract class MergeWriter<I extends DataItem> implements MergeConsumer<I
 
     public MergeWriter(@NonNull File rootFolder) {
         mRootFolder = rootFolder;
-        mExecutor = new WaitableExecutor<Void>(Runtime.getRuntime().availableProcessors());
+        mExecutor = new WaitableExecutor<Void>();
     }
 
     @Override
-    public void start() throws ConsumerException {
+    public void start(@NonNull DocumentBuilderFactory factory) throws ConsumerException {
     }
 
     @Override

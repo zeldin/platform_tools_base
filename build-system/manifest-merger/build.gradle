@@ -1,0 +1,31 @@
+apply plugin: 'java'
+apply plugin: 'sdk-java-lib'
+
+evaluationDependsOn(':base:sdklib')
+
+group = 'com.android.tools.build'
+archivesBaseName = 'manifest-merger'
+version = rootProject.ext.baseVersion
+
+dependencies {
+    compile project(':base:common')
+    compile project(':base:sdklib')
+    compile project(':base:sdk-common')
+    compile 'net.sf.kxml:kxml2:2.3.0'
+
+    testCompile project(':base:sdklib').sourceSets.test.output
+    testCompile 'junit:junit:3.8.1'
+    testCompile 'org.mockito:mockito-all:1.9.5'
+}
+
+sourceSets {
+    main.resources.srcDir 'src/main/java'
+    test.resources.srcDir 'src/test/java'
+}
+
+project.ext.pomName = 'Android Tools Manifest Merger library'
+project.ext.pomDesc = 'A Library to merge Android manifests.'
+
+apply from: "$rootDir/buildSrc/base/publish.gradle"
+apply from: "$rootDir/buildSrc/base/javadoc.gradle"
+

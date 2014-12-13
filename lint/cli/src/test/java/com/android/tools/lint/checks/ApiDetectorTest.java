@@ -16,8 +16,21 @@
 
 package com.android.tools.lint.checks;
 
+import static com.android.tools.lint.checks.ApiDetector.INLINED;
+import static com.android.tools.lint.checks.ApiDetector.UNSUPPORTED;
+import static com.android.tools.lint.detector.api.TextFormat.TEXT;
+
+import com.android.annotations.NonNull;
+import com.android.annotations.Nullable;
+import com.android.sdklib.SdkVersionInfo;
+import com.android.tools.lint.detector.api.Context;
 import com.android.tools.lint.detector.api.Detector;
+import com.android.tools.lint.detector.api.Issue;
+import com.android.tools.lint.detector.api.Location;
 import com.android.tools.lint.detector.api.Project;
+import com.android.tools.lint.detector.api.Severity;
+
+import java.io.File;
 
 @SuppressWarnings("javadoc")
 public class ApiDetectorTest extends AbstractCheckTest {
@@ -60,16 +73,98 @@ public class ApiDetectorTest extends AbstractCheckTest {
                 ));
     }
 
-    public void testAttrWithoutSlash() throws Exception {
+    public void testXmlApi2() throws Exception {
         assertEquals(""
-                + "res/layout/divider.xml:7: Error: ?android:dividerHorizontal requires API level 11 (current min is 1) [NewApi]\n"
-                + "    android:divider=\"?android:dividerHorizontal\"\n"
-                + "    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n"
+                + "res/layout/textureview.xml:8: Error: View requires API level 14 (current min is 1): <TextureView> [NewApi]\n"
+                + "    <TextureView\n"
+                + "    ^\n"
                 + "1 errors, 0 warnings\n",
 
                 lintProject(
                         "apicheck/minsdk1.xml=>AndroidManifest.xml",
+                        "res/layout/textureview.xml=>res/layout/textureview.xml"
+                ));
+    }
+
+    public void testTag() throws Exception {
+        assertEquals(""
+                + "res/layout/tag.xml:12: Warning: <tag> is only used in API level 21 and higher (current min is 1) [UnusedAttribute]\n"
+                + "        <tag id=\"@+id/test\" />\n"
+                + "        ~~~~~~~~~~~~~~~~~~~~~~\n"
+                + "0 errors, 1 warnings\n",
+
+                lintProject(
+                        "apicheck/minsdk1.xml=>AndroidManifest.xml",
+                        "res/layout/tag.xml=>res/layout/tag.xml"
+                ));
+    }
+
+    public void testAttrWithoutSlash() throws Exception {
+        assertEquals(""
+                + "res/layout/attribute.xml:4: Error: ?android:indicatorStart requires API level 18 (current min is 1) [NewApi]\n"
+                + "    android:enabled=\"?android:indicatorStart\"\n"
+                + "    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n"
+                + "1 errors, 0 warnings\n",
+
+                lintProject(
+                        "apicheck/minsdk1.xml=>AndroidManifest.xml",
+                        "apicheck/attribute.xml=>res/layout/attribute.xml"
+                ));
+    }
+
+    public void testUnusedAttributes() throws Exception {
+        assertEquals(""
+                + "res/layout/divider.xml:9: Warning: Attribute showDividers is only used in API level 11 and higher (current min is 4) [UnusedAttribute]\n"
+                + "    android:showDividers=\"middle\"\n"
+                + "    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n"
+                + "0 errors, 1 warnings\n",
+
+                lintProject(
+                        "apicheck/minsdk4.xml=>AndroidManifest.xml",
+                        "res/layout/labelfor.xml",
+                        "res/layout/edit_textview.xml",
                         "apicheck/divider.xml=>res/layout/divider.xml"
+                ));
+    }
+
+    public void testUnusedOnSomeVersions1() throws Exception {
+        assertEquals(""
+                + "res/layout/attribute2.xml:4: Error: switchTextAppearance requires API level 14 (current min is 1), but note that attribute editTextColor is only used in API level 11 and higher [NewApi]\n"
+                + "    android:editTextColor=\"?android:switchTextAppearance\"\n"
+                + "    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n"
+                + "res/layout/attribute2.xml:4: Warning: Attribute editTextColor is only used in API level 11 and higher (current min is 1) [UnusedAttribute]\n"
+                + "    android:editTextColor=\"?android:switchTextAppearance\"\n"
+                + "    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n"
+                + "1 errors, 1 warnings\n",
+
+                lintProject(
+                        "apicheck/minsdk1.xml=>AndroidManifest.xml",
+                        "apicheck/attribute2.xml=>res/layout/attribute2.xml"
+                ));
+    }
+
+    public void testXmlApi() throws Exception {
+        assertEquals(""
+                + "res/layout/attribute2.xml:4: Error: ?android:switchTextAppearance requires API level 14 (current min is 11) [NewApi]\n"
+                + "    android:editTextColor=\"?android:switchTextAppearance\"\n"
+                + "    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n"
+                + "1 errors, 0 warnings\n",
+
+                lintProject(
+                        "apicheck/minsdk11.xml=>AndroidManifest.xml",
+                        "apicheck/attribute2.xml=>res/layout/attribute2.xml"
+                ));
+    }
+
+    public void testReportAttributeName() throws Exception {
+        assertEquals("res/layout/layout.xml:13: Warning: Attribute layout_row is only used in API level 14 and higher (current min is 4) [UnusedAttribute]\n"
+                + "            android:layout_row=\"2\"\n"
+                + "            ~~~~~~~~~~~~~~~~~~~~~~\n"
+                + "0 errors, 1 warnings\n",
+
+                lintProject(
+                        "apicheck/minsdk4.xml=>AndroidManifest.xml",
+                        "apicheck/layoutattr.xml=>res/layout/layout.xml"
                 ));
     }
 
@@ -145,6 +240,18 @@ public class ApiDetectorTest extends AbstractCheckTest {
                     "apicheck/themes.xml=>res/values-v14/themes.xml",
                     "apicheck/themes.xml=>res/color-v14/colors.xml"
                     ));
+    }
+
+    public void testThemeVersion() throws Exception {
+        assertEquals(""
+                + "res/values/themes3.xml:3: Error: android:Theme.Holo.Light.DarkActionBar requires API level 14 (current min is 4) [NewApi]\n"
+                + "    <style name=\"AppTheme\" parent=\"android:Theme.Holo.Light.DarkActionBar\">\n"
+                + "                           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n"
+                + "1 errors, 0 warnings\n",
+                lintProject(
+                        "apicheck/minsdk4.xml=>AndroidManifest.xml",
+                        "res/values/themes3.xml"
+                ));
     }
 
     public void testApi1() throws Exception {
@@ -777,9 +884,6 @@ public class ApiDetectorTest extends AbstractCheckTest {
                 + "src/test/pkg/ApiSourceCheck.java:55: Warning: Field requires API level 11 (current min is 1): android.view.View#MEASURED_HEIGHT_STATE_SHIFT [InlinedApi]\n"
                 + "                | ((child.getMeasuredHeight() >> View.MEASURED_HEIGHT_STATE_SHIFT) & (View.MEASURED_STATE_MASK >> View.MEASURED_HEIGHT_STATE_SHIFT));\n"
                 + "                                                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n"
-                + "src/test/pkg/ApiSourceCheck.java:55: Warning: Field requires API level 11 (current min is 1): android.view.View#MEASURED_HEIGHT_STATE_SHIFT [InlinedApi]\n"
-                + "                | ((child.getMeasuredHeight() >> View.MEASURED_HEIGHT_STATE_SHIFT) & (View.MEASURED_STATE_MASK >> View.MEASURED_HEIGHT_STATE_SHIFT));\n"
-                + "                                                                                                                  ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n"
                 + "src/test/pkg/ApiSourceCheck.java:55: Warning: Field requires API level 11 (current min is 1): android.view.View#MEASURED_STATE_MASK [InlinedApi]\n"
                 + "                | ((child.getMeasuredHeight() >> View.MEASURED_HEIGHT_STATE_SHIFT) & (View.MEASURED_STATE_MASK >> View.MEASURED_HEIGHT_STATE_SHIFT));\n"
                 + "                                                                                      ~~~~~~~~~~~~~~~~~~~~~~~~\n"
@@ -801,7 +905,7 @@ public class ApiDetectorTest extends AbstractCheckTest {
                 + "src/test/pkg/ApiSourceCheck.java:51: Error: Field requires API level 14 (current min is 1): android.widget.ZoomButton#ROTATION_X [NewApi]\n"
                 + "        Object rotationX = ZoomButton.ROTATION_X; // Requires API 14\n"
                 + "                                      ~~~~~~~~~~\n"
-                + "1 errors, 18 warnings\n",
+                + "1 errors, 17 warnings\n",
 
                 lintProject(
                         "apicheck/classpath=>.classpath",
@@ -948,5 +1052,210 @@ public class ApiDetectorTest extends AbstractCheckTest {
                         "apicheck/ApiCallTest14$2.class.data=>bin/classes/test/pkg/ApiCallTest14$2.class",
                         "apicheck/ApiCallTest14$3.class.data=>bin/classes/test/pkg/ApiCallTest14$3.class"
                 ));
+    }
+
+    public void testTryWithResources() throws Exception {
+        assertEquals(""
+                + "src/test/pkg/TryWithResources.java:13: Error: Try-with-resources requires API level 19 (current min is 1) [NewApi]\n"
+                + "        try (BufferedReader br = new BufferedReader(new FileReader(path))) {\n"
+                + "        ^\n"
+                + "1 errors, 0 warnings\n",
+                lintProject(
+                        "apicheck/minsdk1.xml=>AndroidManifest.xml",
+                        "src/test/pkg/TryWithResources.java.txt=>src/test/pkg/TryWithResources.java"
+                ));
+    }
+
+    public void testTryWithResourcesOk() throws Exception {
+        assertEquals(""
+                + "No warnings.",
+                lintProject(
+                        "apicheck/minsdk19.xml=>AndroidManifest.xml",
+                        "src/test/pkg/TryWithResources.java.txt=>src/test/pkg/TryWithResources.java"
+                ));
+    }
+
+    public void testReflectiveOperationException() throws Exception {
+        assertEquals(""
+                + "src/test/pkg/Java7API.java:8: Error: Class requires API level 19 (current min is 1): java.lang.ReflectiveOperationException [NewApi]\n"
+                + "        } catch (ReflectiveOperationException e) {\n"
+                + "                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n"
+                + "src/test/pkg/Java7API.java:9: Error: Call requires API level 19 (current min is 1): java.lang.ReflectiveOperationException#printStackTrace [NewApi]\n"
+                + "            e.printStackTrace();\n"
+                + "              ~~~~~~~~~~~~~~~\n"
+                + "2 errors, 0 warnings\n",
+                lintProject(
+                        "apicheck/minsdk1.xml=>AndroidManifest.xml",
+                        "src/test/pkg/Java7API.java.txt=>src/test/pkg/Java7API.java",
+                        "src/test/pkg/Java7API.class.data=>bin/classes/test/pkg/Java7API.class"
+                ));
+    }
+
+    public void testReflectiveOperationExceptionOk() throws Exception {
+        assertEquals("No warnings.",
+                lintProject(
+                        "apicheck/minsdk19.xml=>AndroidManifest.xml",
+                        "src/test/pkg/Java7API.java.txt=>src/test/pkg/Java7API.java"
+                ));
+    }
+
+    public void testMissingApiDatabase() throws Exception {
+        ApiLookup.dispose();
+        assertEquals(""
+                + "ApiDetectorTest_testMissingApiDatabase: Error: Can't find API database; API check not performed [LintError]\n"
+                + "1 errors, 0 warnings\n",
+            lintProject(
+                    "apicheck/minsdk1.xml=>AndroidManifest.xml",
+                    "apicheck/layout.xml=>res/layout/layout.xml",
+                    "apicheck/themes.xml=>res/values/themes.xml",
+                    "apicheck/themes.xml=>res/color/colors.xml",
+                    "apicheck/classpath=>.classpath",
+                    "apicheck/ApiCallTest.java.txt=>src/foo/bar/ApiCallTest.java",
+                    "apicheck/ApiCallTest.class.data=>bin/classes/foo/bar/ApiCallTest.class"
+            ));
+    }
+
+    public void testRipple() throws Exception {
+        assertEquals(""
+                + "res/drawable/ripple.xml:1: Error: <ripple> requires API level 21 (current min is 14) [NewApi]\n"
+                + "<ripple\n"
+                + "^\n"
+                + "1 errors, 0 warnings\n",
+                lintProject(
+                        "apicheck/minsdk14.xml=>AndroidManifest.xml",
+                        "apicheck/ripple.xml=>res/drawable/ripple.xml"
+                ));
+    }
+
+    public void testRippleOk1() throws Exception {
+        // minSdkVersion satisfied
+        assertEquals("No warnings.",
+                lintProject(
+                        "apicheck/minsdk21.xml=>AndroidManifest.xml",
+                        "apicheck/ripple.xml=>res/drawable/ripple.xml"
+                ));
+    }
+
+    public void testRippleOk2() throws Exception {
+        // -vNN location satisfied
+        assertEquals("No warnings.",
+                lintProject(
+                        "apicheck/minsdk4.xml=>AndroidManifest.xml",
+                        "apicheck/ripple.xml=>res/drawable-v21/ripple.xml"
+                ));
+    }
+
+    public void testVector() throws Exception {
+        assertEquals(""
+                + "res/drawable/vector.xml:1: Error: <vector> requires API level 21 (current min is 4) [NewApi]\n"
+                + "<vector xmlns:android=\"http://schemas.android.com/apk/res/android\" >\n"
+                + "^\n"
+                + "1 errors, 0 warnings\n",
+
+                lintProject(
+                        "apicheck/minsdk4.xml=>AndroidManifest.xml",
+                        "apicheck/vector.xml=>res/drawable/vector.xml"
+                ));
+    }
+
+    public void testAnimatedSelector() throws Exception {
+        assertEquals(""
+                + "res/drawable/animated_selector.xml:1: Error: <animated-selector> requires API level 21 (current min is 14) [NewApi]\n"
+                + "<animated-selector xmlns:android=\"http://schemas.android.com/apk/res/android\"\n"
+                + "^\n"
+                + "1 errors, 0 warnings\n",
+                lintProject(
+                        "apicheck/minsdk14.xml=>AndroidManifest.xml",
+                        "apicheck/animated_selector.xml=>res/drawable/animated_selector.xml"
+                ));
+    }
+
+    public void testAnimatedVector() throws Exception {
+        assertEquals(""
+                + "res/drawable/animated_vector.xml:1: Error: <animated-vector> requires API level 21 (current min is 14) [NewApi]\n"
+                + "<animated-vector xmlns:android=\"http://schemas.android.com/apk/res/android\"\n"
+                + "^\n"
+                + "1 errors, 0 warnings\n",
+                lintProject(
+                        "apicheck/minsdk14.xml=>AndroidManifest.xml",
+                        "apicheck/animated_vector.xml=>res/drawable/animated_vector.xml"
+                ));
+    }
+
+    public void testPaddingStart() throws Exception {
+        assertEquals(""
+                + "res/layout/padding_start.xml:14: Error: Attribute paddingStart referenced here can result in a crash on some specific devices older than API 17 (current min is 4) [NewApi]\n"
+                + "            android:paddingStart=\"20dp\"\n"
+                + "            ~~~~~~~~~~~~~~~~~~~~~~~~~~~\n"
+                + "res/layout/padding_start.xml:21: Error: Attribute paddingStart referenced here can result in a crash on some specific devices older than API 17 (current min is 4) [NewApi]\n"
+                + "            android:paddingStart=\"20dp\"\n"
+                + "            ~~~~~~~~~~~~~~~~~~~~~~~~~~~\n"
+                + "res/layout/padding_start.xml:28: Error: Attribute paddingStart referenced here can result in a crash on some specific devices older than API 17 (current min is 4) [NewApi]\n"
+                + "            android:paddingStart=\"20dp\"\n"
+                + "            ~~~~~~~~~~~~~~~~~~~~~~~~~~~\n"
+                + "3 errors, 0 warnings\n",
+            lintProject(
+                    "apicheck/minsdk4.xml=>AndroidManifest.xml",
+                    "apicheck/padding_start.xml=>res/layout/padding_start.xml"
+            ));
+    }
+
+    public void testPaddingStartNotApplicable() throws Exception {
+        assertEquals("No warnings.",
+                lintProject(
+                        "apicheck/minsdk4.xml=>AndroidManifest.xml",
+                        "apicheck/padding_start.xml=>res/layout-v17/padding_start.xml"
+                ));
+    }
+
+    public void testSwitch() throws Exception {
+        assertEquals("No warnings.",
+            lintProject(
+                    "apicheck/classpath=>.classpath",
+                    "apicheck/minsdk4.xml=>AndroidManifest.xml",
+                    "apicheck/TargetApiTest.java.txt=>src/test/pkg/TargetApiTest.java",
+                    "apicheck/TargetApiTest.class.data=>bin/classes/test/pkg/TargetApiTest.class",
+                    "apicheck/TargetApiTest$1.class.data=>bin/classes/test/pkg/TargetApiTest$1.class"
+            ));
+    }
+
+    public void testGravity() throws Exception {
+        assertEquals("No warnings.",
+                lintProject(
+                        "apicheck/minsdk4.xml=>AndroidManifest.xml",
+                        "apicheck/GravityTest.java.txt=>src/test/pkg/GravityTest.java"
+                ));
+    }
+
+    @Override
+    protected TestLintClient createClient() {
+        if (getName().equals("testMissingApiDatabase")) {
+            // Simulate an environment where there is no API database
+            return new TestLintClient() {
+                @Override
+                public File findResource(@NonNull String relativePath) {
+                    return null;
+                }
+            };
+        }
+        return super.createClient();
+    }
+
+    @Override
+    protected boolean ignoreSystemErrors() {
+        if (getName().equals("testMissingApiDatabase")) {
+            return false;
+        }
+        return super.ignoreSystemErrors();
+    }
+
+    @Override
+    protected void checkReportedError(@NonNull Context context, @NonNull Issue issue,
+            @NonNull Severity severity, @Nullable Location location, @NonNull String message) {
+        if (issue == UNSUPPORTED || issue == INLINED) {
+            int requiredVersion = ApiDetector.getRequiredVersion(issue, message, TEXT);
+            assertTrue("Could not extract message tokens from " + message,
+                    requiredVersion >= 1 && requiredVersion <= SdkVersionInfo.HIGHEST_KNOWN_API);
+        }
     }
 }

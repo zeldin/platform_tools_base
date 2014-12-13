@@ -29,6 +29,7 @@ import com.google.common.io.Closeables;
 import java.io.BufferedReader;
 import java.io.FileNotFoundException;
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.util.Arrays;
 import java.util.Collections;
@@ -75,6 +76,7 @@ public class ProjectProperties implements IPropertySource {
     public static final String PROPERTY_RULES_PATH = "layoutrules.jars";
 
     public static final String PROPERTY_SDK = "sdk.dir";
+    public static final String PROPERTY_NDK = "ndk.dir";
     // LEGACY - Kept so that we can actually remove it from local.properties.
     private static final String PROPERTY_SDK_LEGACY = "sdk-location";
 
@@ -453,16 +455,66 @@ public class ProjectProperties implements IPropertySource {
     public static Map<String, String> parsePropertyFile(
             @NonNull IAbstractFile propFile,
             @Nullable ILogger log) {
+        InputStream is = null;
+        try {
+            is = propFile.getContents();
+            return parsePropertyStream(is,
+                                       propFile.getOsLocation(),
+                                       log);
+        } catch (StreamException e) {
+            if (log != null) {
+                log.warning("Error parsing '%1$s': %2$s.",
+                        propFile.getOsLocation(),
+                        e.getMessage());
+            }
+        } finally {
+            try {
+                Closeables.close(is, true /* swallowIOException */);
+            } catch (IOException e) {
+                // cannot happen
+            }
+        }
+
+
+        return null;
+    }
+
+    /**
+     * Parses a property file (using UTF-8 encoding) and returns a map of the content.
+     * <p/>
+     * Always closes the given input stream on exit.
+     * <p/>
+     * IMPORTANT: This method is now unfortunately used in multiple places to parse random
+     * property files. This is NOT a safe practice since there is no corresponding method
+     * to write property files unless you use {@link ProjectPropertiesWorkingCopy#save()}.
+     * Code that writes INI or properties without at least using {@link #escape(String)} will
+     * certainly not load back correct data. <br/>
+     * Unless there's a strong legacy need to support existing files, new callers should
+     * probably just use Java's {@link Properties} which has well defined semantics.
+     * It's also a mistake to write/read property files using this code and expect it to
+     * work with Java's {@link Properties} or external tools (e.g. ant) since there can be
+     * differences in escaping and in character encoding.
+     *
+     * @param propStream the input stream of the property file to parse.
+     * @param propPath the file path, for display purposed in case of error.
+     * @param log the ILogger object receiving warning/error from the parsing.
+     * @return the map of (key,value) pairs, or null if the parsing failed.
+     */
+    public static Map<String, String> parsePropertyStream(
+            @NonNull InputStream propStream,
+            @NonNull String propPath,
+            @Nullable ILogger log) {
         BufferedReader reader = null;
         try {
-            reader = new BufferedReader(new InputStreamReader(propFile.getContents(),
-                    SdkConstants.INI_CHARSET));
+            //noinspection IOResourceOpenedButNotSafelyClosed
+            reader = new BufferedReader(
+                        new InputStreamReader(propStream, SdkConstants.INI_CHARSET));
 
             String line = null;
             Map<String, String> map = new HashMap<String, String>();
             while ((line = reader.readLine()) != null) {
                 line = line.trim();
-                if (line.length() > 0 && line.charAt(0) != '#') {
+                if (!line.isEmpty() && line.charAt(0) != '#') {
 
                     Matcher m = PATTERN_PROP.matcher(line);
                     if (m.matches()) {
@@ -470,7 +522,7 @@ public class ProjectProperties implements IPropertySource {
                     } else {
                         if (log != null) {
                             log.warning("Error parsing '%1$s': \"%2$s\" is not a valid syntax",
-                                    propFile.getOsLocation(),
+                                    propPath,
                                     line);
                         }
                         return null;
@@ -486,17 +538,20 @@ public class ProjectProperties implements IPropertySource {
         } catch (IOException e) {
             if (log != null) {
                 log.warning("Error parsing '%1$s': %2$s.",
-                        propFile.getOsLocation(),
-                        e.getMessage());
-            }
-        } catch (StreamException e) {
-            if (log != null) {
-                log.warning("Error parsing '%1$s': %2$s.",
-                        propFile.getOsLocation(),
+                        propPath,
                         e.getMessage());
             }
         } finally {
-            Closeables.closeQuietly(reader);
+            try {
+                Closeables.close(reader, true /* swallowIOException */);
+            } catch (IOException e) {
+                // cannot happen
+            }
+            try {
+                Closeables.close(propStream, true /* swallowIOException */);
+            } catch (IOException e) {
+                // cannot happen
+            }
         }
 
         return null;

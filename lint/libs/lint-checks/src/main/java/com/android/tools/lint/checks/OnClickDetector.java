@@ -60,7 +60,6 @@ public class OnClickDetector extends LayoutDetector implements ClassScanner {
     public static final Issue ISSUE = Issue.create(
             "OnClick", //$NON-NLS-1$
             "`onClick` method does not exist",
-            "Ensures that `onClick` attribute values refer to real methods",
 
             "The `onClick` attribute value should be the name of a method in this View's context " +
             "to invoke when the view is clicked. This name must correspond to a public method " +
@@ -100,21 +99,21 @@ public class OnClickDetector extends LayoutDetector implements ClassScanner {
 
                 Object clientData = handle.getClientData();
                 if (clientData instanceof Node) {
-                    if (driver.isSuppressed(ISSUE, (Node) clientData)) {
+                    if (driver.isSuppressed(null, ISSUE, (Node) clientData)) {
                         continue;
                     }
                 }
 
                 Location location = handle.resolve();
                 String message = String.format(
-                    "Corresponding method handler 'public void %1$s(android.view.View)' not found",
+                    "Corresponding method handler '`public void %1$s(android.view.View)`' not found",
                     name);
                 List<String> similar = mSimilar != null ? mSimilar.get(name) : null;
                 if (similar != null) {
                     Collections.sort(similar);
-                  message += String.format(" (did you mean %1$s ?)", Joiner.on(", ").join(similar));
+                  message += String.format(" (did you mean `%1$s` ?)", Joiner.on(", ").join(similar));
                 }
-                context.report(ISSUE, location, message, null);
+                context.report(ISSUE, location, message);
             }
         }
     }
@@ -131,10 +130,10 @@ public class OnClickDetector extends LayoutDetector implements ClassScanner {
         String value = attribute.getValue();
         if (value.isEmpty() || value.trim().isEmpty()) {
             context.report(ISSUE, attribute, context.getLocation(attribute),
-                    "onClick attribute value cannot be empty", null);
+                    "`onClick` attribute value cannot be empty");
         } else if (!value.equals(value.trim())) {
             context.report(ISSUE, attribute, context.getLocation(attribute),
-                    "There should be no whitespace around attribute values", null);
+                    "There should be no whitespace around attribute values");
         } else if (!value.startsWith(PREFIX_RESOURCE_REF)) { // Not resolved
             if (!context.getProject().getReportIssues()) {
                 // If this is a library project not being analyzed, ignore it
@@ -144,7 +143,7 @@ public class OnClickDetector extends LayoutDetector implements ClassScanner {
             if (mNames == null) {
                 mNames = new HashMap<String, Location.Handle>();
             }
-            Handle handle = context.parser.createLocationHandle(context, attribute);
+            Handle handle = context.createLocationHandle(attribute);
             handle.setClientData(attribute);
 
             // Replace unicode characters with the actual value since that's how they
@@ -210,15 +209,15 @@ public class OnClickDetector extends LayoutDetector implements ClassScanner {
                 if ((method.access & Opcodes.ACC_PUBLIC) == 0) {
                     Location location = context.getLocation(method, classNode);
                     String message = String.format(
-                            "On click handler %1$s(View) must be public",
+                            "On click handler `%1$s(View)` must be public",
                             method.name);
-                    context.report(ISSUE, location, message, null);
+                    context.report(ISSUE, location, message);
                 } else if ((method.access & Opcodes.ACC_STATIC) != 0) {
                     Location location = context.getLocation(method, classNode);
                     String message = String.format(
-                            "On click handler %1$s(View) should not be static",
+                            "On click handler `%1$s(View)` should not be static",
                             method.name);
-                    context.report(ISSUE, location, message, null);
+                    context.report(ISSUE, location, message);
                 }
 
                 if (mNames.isEmpty()) {

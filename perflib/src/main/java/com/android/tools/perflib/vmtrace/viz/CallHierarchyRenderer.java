@@ -18,16 +18,23 @@ package com.android.tools.perflib.vmtrace.viz;
 
 import com.android.annotations.NonNull;
 import com.android.tools.perflib.vmtrace.Call;
+import com.android.tools.perflib.vmtrace.ClockType;
 import com.android.tools.perflib.vmtrace.MethodInfo;
+import com.android.tools.perflib.vmtrace.ThreadInfo;
+import com.android.tools.perflib.vmtrace.TimeSelector;
 import com.android.tools.perflib.vmtrace.VmTraceData;
 import com.android.utils.HtmlBuilder;
 
 import java.awt.*;
 import java.awt.geom.AffineTransform;
 import java.awt.geom.Point2D;
+import java.awt.geom.Rectangle2D;
 import java.text.DecimalFormat;
 import java.util.Iterator;
 import java.util.concurrent.TimeUnit;
+
+import static com.android.tools.perflib.vmtrace.ClockType.THREAD;
+import static com.android.tools.perflib.vmtrace.ClockType.GLOBAL;
 
 /** Renders the call hierarchy rooted at a given call that is part of the trace. */
 public class CallHierarchyRenderer {
@@ -39,19 +46,26 @@ public class CallHierarchyRenderer {
     private static final int TEXT_LEFT_PADDING = 5;
 
     private final VmTraceData mTraceData;
+    private final ThreadInfo mThread;
     private final Call mTopCall;
     private final int mYOffset;
+    private final TimeUnit mLayoutTimeUnits;
+    private final RenderContext mRenderContext;
 
-    private final Rectangle mLayout = new Rectangle();
-    private final Point2D.Float mSrc = new Point2D.Float();
-    private final Point2D.Float mDst = new Point2D.Float();
+    private final Rectangle2D mLayout = new Rectangle2D.Double();
+    private final Point2D mTmpPoint1 = new Point2D.Double();
+    private final Point2D mTmpPoint2 = new Point2D.Double();
 
-    private Font myFont;
+    private Font mFont;
 
-    public CallHierarchyRenderer(@NonNull VmTraceData vmTraceData, @NonNull Call c, int yOffset) {
+    public CallHierarchyRenderer(@NonNull VmTraceData vmTraceData, @NonNull ThreadInfo thread,
+            int yOffset, TimeUnit defaultTimeUnits, RenderContext renderContext) {
         mTraceData = vmTraceData;
-        mTopCall = c;
+        mThread = thread;
+        mTopCall = thread.getTopLevelCall();
         mYOffset = yOffset;
+        mLayoutTimeUnits = defaultTimeUnits;
+        mRenderContext = renderContext;
     }
 
     /**
@@ -59,14 +73,18 @@ public class CallHierarchyRenderer {
      * This essentially iterates through every single call in the hierarchy and renders it if it is
      * visible in the current viewport.
      */
-    public void render(Graphics2D g) {
+    public void render(Graphics2D g, AffineTransform viewPortTransform) {
         Rectangle clip = g.getClipBounds();
 
         Iterator<Call> it = mTopCall.getCallHierarchyIterator();
         while (it.hasNext()) {
             Call c = it.next();
 
+            // obtain layout in item space
             fillLayoutBounds(c, mLayout);
+
+            // transform based on the current viewport (scale + translate)
+            transformRect(viewPortTransform, mLayout);
 
             // no need to render if it is is not in the current viewport.
             if (!clip.intersects(mLayout)) {
@@ -74,59 +92,75 @@ public class CallHierarchyRenderer {
             }
 
             // no need to render if it is too small (arbitrarily assumed to be < 1 px wide)
-            double widthOnScreen = g.getTransform().getScaleX() * mLayout.width;
-            if (widthOnScreen < 1) {
+            if (mLayout.getWidth() < 1) {
                 continue;
             }
 
             // obtain the fill color based on its importance
-            Color fillColor = getFillColor(c);
+            Color fillColor = mRenderContext.getFillColor(c, mThread);
             g.setColor(fillColor);
-            g.fillRect(mLayout.x, mLayout.y, mLayout.width, mLayout.height);
+            g.fill(mLayout);
 
             // paint its name within the rectangle if possible
             String name = getName(c);
-            drawString(g, name, mLayout, getFontColor(c));
+            drawString(g, name, mLayout, mRenderContext.getFontColor(c, mThread));
         }
     }
 
-    private void drawString(Graphics2D g, String name, Rectangle bounds, Color fontColor) {
-        if (myFont == null) {
-            myFont = g.getFont().deriveFont(8.0f);
+    private Rectangle2D transformRect(AffineTransform viewPortTransform, Rectangle2D rect) {
+        mTmpPoint1.setLocation(rect.getX(), rect.getY());
+        mTmpPoint2.setLocation(rect.getWidth(), rect.getHeight());
+
+        viewPortTransform.transform(mTmpPoint1, mTmpPoint1);
+        viewPortTransform.deltaTransform(mTmpPoint2, mTmpPoint2);
+
+        rect.setRect(mTmpPoint1.getX(),
+                mTmpPoint1.getY(),
+                mTmpPoint2.getX(),
+                mTmpPoint2.getY());
+        return rect;
+    }
+
+    private void drawString(Graphics2D g, String name, Rectangle2D bounds, Color fontColor) {
+        if (mFont == null) {
+            mFont = g.getFont().deriveFont(8.0f);
         }
-        g.setFont(myFont);
+        g.setFont(mFont);
         g.setColor(fontColor);
 
         AffineTransform origTx = g.getTransform();
 
-        mSrc.x = bounds.x + TEXT_LEFT_PADDING;
-        mSrc.y = bounds.y + TEXT_HEIGHT;
+        mTmpPoint1.setLocation(bounds.getX() + TEXT_LEFT_PADDING, bounds.getY() + TEXT_HEIGHT);
 
-        double availableWidth = g.getTransform().getScaleX() * bounds.width;
+        double availableWidth = g.getTransform().getScaleX() * bounds.getWidth();
 
         // When drawing a string, we want its location to be transformed by the current viewport
         // transform, but not the text itself (we don't want it zoomed out or in).
-        origTx.transform(mSrc, mDst);
+        origTx.transform(mTmpPoint1, mTmpPoint1);
         g.setTransform(new AffineTransform());
 
         double stringWidth = g.getFontMetrics().stringWidth(name);
         if (availableWidth > stringWidth) {
-            g.drawString(name, mDst.x, mDst.y);
+            g.drawString(name, (float) mTmpPoint1.getX(), (float) mTmpPoint1.getY());
         }
 
         g.setTransform(origTx);
     }
 
     /** Fills the layout bounds corresponding to a given call in the given Rectangle object. */
-    private void fillLayoutBounds(Call c, Rectangle layoutBounds) {
-        layoutBounds.x = (int) (c.getEntryGlobalTime() - mTopCall.getEntryGlobalTime() + PADDING);
-        layoutBounds.y = c.getDepth() * PER_LEVEL_HEIGHT_PX + mYOffset + PADDING;
-        layoutBounds.width  = (int) c.getInclusiveGlobalTime() - 2 * PADDING;
-        layoutBounds.height = PER_LEVEL_HEIGHT_PX - 2 * PADDING;
+    private void fillLayoutBounds(Call c, Rectangle2D layoutBounds) {
+        ClockType renderClock = mRenderContext.getRenderClock();
+        double x = c.getEntryTime(renderClock, mLayoutTimeUnits)
+                - mTopCall.getEntryTime(renderClock, mLayoutTimeUnits)
+                + PADDING;
+        double y = c.getDepth() * PER_LEVEL_HEIGHT_PX + mYOffset + PADDING;
+        double width  = c.getInclusiveTime(renderClock, mLayoutTimeUnits) - 2 * PADDING;
+        double height = PER_LEVEL_HEIGHT_PX - 2 * PADDING;
+        layoutBounds.setRect(x, y, width, height);
     }
 
     /** Get the tooltip corresponding to given location (in item coordinates). */
-    public String getToolTipFor(int x, int y) {
+    public String getToolTipFor(double x, double y) {
         Iterator<Call> it = mTopCall.getCallHierarchyIterator();
         while (it.hasNext()) {
             Call c = it.next();
@@ -136,6 +170,7 @@ public class CallHierarchyRenderer {
                 return formatToolTip(c);
             }
         }
+
         return null;
     }
 
@@ -145,30 +180,42 @@ public class CallHierarchyRenderer {
         HtmlBuilder htmlBuilder = new HtmlBuilder();
         htmlBuilder.openHtmlBody();
 
-        htmlBuilder.addHeading(getName(c), "black");
+        htmlBuilder.addHeading(getMethodInfo(c).getFullName(), "black");
 
-        long span = c.getExitGlobalTime() - c.getEntryGlobalTime();
-        TimeUnit unit = mTraceData.getTimeUnits();
-        String entryGlobal = TimeUtils.makeHumanReadable(c.getEntryGlobalTime(), span, unit);
-        String entryThread = TimeUtils.makeHumanReadable(c.getEntryThreadTime(), span, unit);
-        String exitGlobal = TimeUtils.makeHumanReadable(c.getExitGlobalTime(), span, unit);
-        String exitThread = TimeUtils.makeHumanReadable(c.getExitThreadTime(), span, unit);
+        long span = c.getExitTime(GLOBAL, TimeUnit.NANOSECONDS) -
+                c.getEntryTime(GLOBAL, TimeUnit.NANOSECONDS);
+        TimeUnit unit = TimeUnit.NANOSECONDS;
+        String entryGlobal = TimeUtils.makeHumanReadable(c.getEntryTime(GLOBAL, unit), span, unit);
+        String entryThread = TimeUtils.makeHumanReadable(c.getEntryTime(THREAD, unit), span, unit);
+        String exitGlobal = TimeUtils.makeHumanReadable(c.getExitTime(GLOBAL, unit), span, unit);
+        String exitThread = TimeUtils.makeHumanReadable(c.getExitTime(THREAD, unit), span, unit);
         String durationGlobal = TimeUtils.makeHumanReadable(
-                c.getExitGlobalTime() - c.getEntryGlobalTime(), span, unit);
+                c.getExitTime(GLOBAL, unit) - c.getEntryTime(GLOBAL, unit), span, unit);
         String durationThread = TimeUtils.makeHumanReadable(
-                c.getExitThreadTime() - c.getEntryThreadTime(), span, unit);
+                c.getExitTime(THREAD, unit) - c.getEntryTime(THREAD, unit), span, unit);
 
         htmlBuilder.beginTable();
-        htmlBuilder.addTableRow(true, "", "Wall Time", "Thread Time");
-        htmlBuilder.addTableRow("Entry", entryGlobal, entryThread);
-        htmlBuilder.addTableRow("Exit", exitGlobal, exitThread);
-        htmlBuilder.addTableRow("Duration", durationGlobal, durationThread);
+        htmlBuilder.addTableRow("Wallclock Time:", durationGlobal,
+                String.format("(from %s to %s)", entryGlobal, exitGlobal));
+        htmlBuilder.addTableRow("CPU Time:", durationThread,
+                String.format("(from %s to %s)", entryThread, exitThread));
         htmlBuilder.endTable();
 
-        MethodInfo info = getMethodInfo(c);
-        htmlBuilder.add("Inclusive Time (across all invocations): ");
+        htmlBuilder.newline();
+        htmlBuilder.add("Inclusive Time: ");
         htmlBuilder.beginBold();
-        htmlBuilder.add(PERCENTAGE_FORMATTER.format(info.getInclusiveThreadPercent()));
+        double inclusivePercentage = mTraceData.getDurationPercentage(c, mThread,
+                mRenderContext.getRenderClock(), true /* use inclusive time */);
+        htmlBuilder.add(PERCENTAGE_FORMATTER.format(inclusivePercentage));
+        htmlBuilder.add("%");
+        htmlBuilder.endBold();
+
+        htmlBuilder.newline();
+        htmlBuilder.add("Exclusive Time: ");
+        htmlBuilder.beginBold();
+        double exclusivePercentage = mTraceData.getDurationPercentage(c, mThread,
+                mRenderContext.getRenderClock(), false /* don't use inclusive time */);
+        htmlBuilder.add(PERCENTAGE_FORMATTER.format(exclusivePercentage));
         htmlBuilder.add("%");
         htmlBuilder.endBold();
 
@@ -184,59 +231,5 @@ public class CallHierarchyRenderer {
     private MethodInfo getMethodInfo(@NonNull Call c) {
         long methodId = c.getMethodId();
         return mTraceData.getMethod(methodId);
-    }
-
-    /**
-     * Returns the fill color for a particular call. The fill color is dependent on its
-     * inclusive thread percentage time.
-     */
-    private Color getFillColor(Call c) {
-        MethodInfo info = mTraceData.getMethod(c.getMethodId());
-        int percent = quantize(info.getInclusiveThreadPercent());
-        return getFill(percent);
-    }
-
-    /**
-     * Returns the font color for a particular call. This returns a color complementary to
-     * {@link #getFillColor(com.android.tools.perflib.vmtrace.Call)}, so that text rendered
-     * on top of that color is distinguishable from the background.
-     */
-    private Color getFontColor(Call c) {
-        MethodInfo info = mTraceData.getMethod(c.getMethodId());
-        int percent = quantize(info.getInclusiveThreadPercent());
-        return getFontColor(percent);
-    }
-
-    private static final Color[] QUANTIZED_COLORS = {
-            new Color(247,251,255),
-            new Color(222,235,247),
-            new Color(198,219,239),
-            new Color(158,202,225),
-            new Color(107,174,214),
-            new Color(66,146,198),
-            new Color(33,113,181),
-            new Color(8,81,156),
-            new Color(8,48,107),
-    };
-
-    private Color getFill(int percent) {
-        int i = percent * QUANTIZED_COLORS.length / 100;
-        if (i >= QUANTIZED_COLORS.length) {
-            i = QUANTIZED_COLORS.length - 1;
-        }
-        return QUANTIZED_COLORS[i];
-    }
-
-    private Color getFontColor(int percent) {
-        int i = percent / 10;
-        if (i >= QUANTIZED_COLORS.length) {
-            i = QUANTIZED_COLORS.length - 1;
-        }
-
-        return  i > 6 ? Color.WHITE : Color.BLACK;
-    }
-
-    private int quantize(float inclusiveThreadPercent) {
-        return ((int)(inclusiveThreadPercent + 9) / 10) * 10;
     }
 }

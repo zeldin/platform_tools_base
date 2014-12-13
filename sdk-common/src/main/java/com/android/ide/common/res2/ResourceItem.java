@@ -20,6 +20,7 @@ import static com.android.SdkConstants.ANDROID_NEW_ID_PREFIX;
 import static com.android.SdkConstants.ANDROID_NS_NAME_PREFIX;
 import static com.android.SdkConstants.ANDROID_NS_NAME_PREFIX_LEN;
 import static com.android.SdkConstants.ANDROID_PREFIX;
+import static com.android.SdkConstants.ATTR_ID;
 import static com.android.SdkConstants.ATTR_NAME;
 import static com.android.SdkConstants.ATTR_PARENT;
 import static com.android.SdkConstants.ATTR_QUANTITY;
@@ -27,6 +28,9 @@ import static com.android.SdkConstants.ATTR_TYPE;
 import static com.android.SdkConstants.ATTR_VALUE;
 import static com.android.SdkConstants.NEW_ID_PREFIX;
 import static com.android.SdkConstants.PREFIX_RESOURCE_REF;
+import static com.android.ide.common.resources.ResourceResolver.ATTR_EXAMPLE;
+import static com.android.ide.common.resources.ResourceResolver.XLIFF_G_TAG;
+import static com.android.ide.common.resources.ResourceResolver.XLIFF_NAMESPACE_PREFIX;
 
 import com.android.SdkConstants;
 import com.android.annotations.NonNull;
@@ -35,18 +39,22 @@ import com.android.ide.common.rendering.api.ArrayResourceValue;
 import com.android.ide.common.rendering.api.AttrResourceValue;
 import com.android.ide.common.rendering.api.DeclareStyleableResourceValue;
 import com.android.ide.common.rendering.api.DensityBasedResourceValue;
+import com.android.ide.common.rendering.api.ItemResourceValue;
 import com.android.ide.common.rendering.api.PluralsResourceValue;
 import com.android.ide.common.rendering.api.ResourceValue;
 import com.android.ide.common.rendering.api.StyleResourceValue;
+import com.android.ide.common.rendering.api.TextResourceValue;
 import com.android.ide.common.resources.configuration.Configurable;
 import com.android.ide.common.resources.configuration.DensityQualifier;
 import com.android.ide.common.resources.configuration.FolderConfiguration;
 import com.android.resources.Density;
 import com.android.resources.ResourceType;
+import com.android.utils.XmlUtils;
 import com.google.common.base.Splitter;
 
 import org.w3c.dom.Attr;
 import org.w3c.dom.Document;
+import org.w3c.dom.Element;
 import org.w3c.dom.NamedNodeMap;
 import org.w3c.dom.Node;
 import org.w3c.dom.NodeList;
@@ -75,7 +83,7 @@ public class ResourceItem extends DataItem<ResourceFile>
      * @param type  the type of the resource
      * @param value an optional Node that represents the resource value.
      */
-    public ResourceItem(@NonNull String name, @NonNull ResourceType type, Node value) {
+    public ResourceItem(@NonNull String name, @NonNull ResourceType type, @Nullable Node value) {
         super(name);
         mType = type;
         mValue = value;
@@ -112,6 +120,30 @@ public class ResourceItem extends DataItem<ResourceFile>
     }
 
     /**
+     * Returns the resource item qualifiers.
+     * @return the qualifiers
+     */
+    @NonNull
+    public String getQualifiers() {
+        ResourceFile resourceFile = getSource();
+        if (resourceFile == null) {
+            throw new RuntimeException("Cannot call getQualifier on " + toString());
+        }
+
+        return resourceFile.getQualifiers();
+    }
+
+    @NonNull
+    public DataFile.FileType getSourceType() {
+        ResourceFile resourceFile = getSource();
+        if (resourceFile == null) {
+            throw new RuntimeException("Cannot call getSourceType on " + toString());
+        }
+
+        return resourceFile.getType();
+    }
+
+    /**
      * Sets the value of the resource and set its state to TOUCHED.
      *
      * @param from the resource to copy the value from.
@@ -123,9 +155,7 @@ public class ResourceItem extends DataItem<ResourceFile>
 
     @Override
     public FolderConfiguration getConfiguration() {
-        assert getSource() != null : this;
-
-        String qualifier = getSource().getQualifiers();
+        String qualifier = getQualifiers();
         if (qualifier.isEmpty()) {
             return new FolderConfiguration();
         }
@@ -149,22 +179,12 @@ public class ResourceItem extends DataItem<ResourceFile>
             throw new IllegalStateException(
                     "ResourceItem.getKey called on object with no ResourceFile: " + this);
         }
-        String qualifiers = getSource().getQualifiers();
+        String qualifiers = getQualifiers();
         if (!qualifiers.isEmpty()) {
             return mType.getName() + "-" + qualifiers + "/" + getName();
         }
 
         return mType.getName() + "/" + getName();
-    }
-
-    @Override
-    void addExtraAttributes(Document document, Node node, String namespaceUri) {
-        NodeUtils.addAttribute(document, node, null, ATTR_TYPE, mType.getName());
-    }
-
-    @Override
-    Node getAdoptedNode(Document document) {
-        return NodeUtils.adoptNode(document, mValue);
     }
 
     @Override
@@ -198,7 +218,7 @@ public class ResourceItem extends DataItem<ResourceFile>
     // instead. This is a temporary fix to make rendering work properly again.
     @Nullable
     private Density getFolderDensity() {
-        String qualifiers = getSource().getQualifiers();
+        String qualifiers = getQualifiers();
         if (!qualifiers.isEmpty() && qualifiers.contains("dpi")) {
             Iterable<String> segments = Splitter.on('-').split(qualifiers);
             FolderConfiguration config = FolderConfiguration.getConfigFromQualifiers(segments);
@@ -235,7 +255,7 @@ public class ResourceItem extends DataItem<ResourceFile>
      */
     public boolean compareValueWith(ResourceItem resource) {
         if (mValue != null && resource.mValue != null) {
-            return NodeUtils.compareElementNode(mValue, resource.mValue);
+            return NodeUtils.compareElementNode(mValue, resource.mValue, true);
         }
 
         return mValue == resource.mValue;
@@ -264,11 +284,8 @@ public class ResourceItem extends DataItem<ResourceFile>
 
         ResourceItem that = (ResourceItem) o;
 
-        if (mType != that.mType) {
-            return false;
-        }
+        return mType == that.mType;
 
-        return true;
     }
 
     @Override
@@ -317,6 +334,9 @@ public class ResourceItem extends DataItem<ResourceFile>
                 break;
             case ATTR:
                 value = parseAttrValue(new AttrResourceValue(type, name, isFrameworks));
+                break;
+            case STRING:
+                value = parseTextValue(new TextResourceValue(type, name, isFrameworks));
                 break;
             default:
                 value = parseValue(new ResourceValue(type, name, isFrameworks));
@@ -369,11 +389,11 @@ public class ResourceItem extends DataItem<ResourceFile>
                         isFrameworkAttr = true;
                     }
 
-                    ResourceValue resValue = new ResourceValue(null, name,
+                    ItemResourceValue resValue = new ItemResourceValue(name, isFrameworkAttr,
                             styleValue.isFramework());
-                    resValue.setValue(
-                            ValueXmlHelper.unescapeResourceString(getTextNode(child), false, true));
-                    styleValue.addValue(resValue, isFrameworkAttr);
+                    String text = getTextNode(child.getChildNodes());
+                    resValue.setValue(ValueXmlHelper.unescapeResourceString(text, false, true));
+                    styleValue.addItem(resValue);
                 }
             }
         }
@@ -420,7 +440,7 @@ public class ResourceItem extends DataItem<ResourceFile>
             Node child = children.item(i);
 
             if (child.getNodeType() == Node.ELEMENT_NODE) {
-                String text = getTextNode(child);
+                String text = getTextNode(child.getChildNodes());
                 text = ValueXmlHelper.unescapeResourceString(text, false, true);
                 arrayValue.addElement(text);
             }
@@ -438,7 +458,7 @@ public class ResourceItem extends DataItem<ResourceFile>
                 NamedNodeMap attributes = child.getAttributes();
                 String quantity = getAttributeValue(attributes, ATTR_QUANTITY);
                 if (quantity != null) {
-                    String text = getTextNode(child);
+                    String text = getTextNode(child.getChildNodes());
                     text = ValueXmlHelper.unescapeResourceString(text, false, true);
                     value.addPlural(quantity, text);
                 }
@@ -479,25 +499,127 @@ public class ResourceItem extends DataItem<ResourceFile>
 
     @NonNull
     private ResourceValue parseValue(@NonNull ResourceValue value) {
-        value.setValue(ValueXmlHelper.unescapeResourceString(getTextNode(mValue), false, true));
+        String text = getTextNode(mValue.getChildNodes());
+        value.setValue(ValueXmlHelper.unescapeResourceString(text, false, true));
+
         return value;
     }
 
     @NonNull
-    private static String getTextNode(@NonNull Node node) {
+    private static String getTextNode(@NonNull NodeList children) {
         StringBuilder sb = new StringBuilder();
 
-        NodeList children = node.getChildNodes();
         for (int i = 0, n = children.getLength(); i < n; i++) {
             Node child = children.item(i);
 
             short nodeType = child.getNodeType();
 
             switch (nodeType) {
-                case Node.ELEMENT_NODE:
-                    String str = getTextNode(child);
-                    sb.append(str);
+                case Node.ELEMENT_NODE: {
+                    Element element = (Element) child;
+                    if (XLIFF_G_TAG.equals(element.getLocalName()) &&
+                            element.getNamespaceURI() != null &&
+                            element.getNamespaceURI().startsWith( XLIFF_NAMESPACE_PREFIX)) {
+                        if (element.hasAttribute(ATTR_EXAMPLE)) {
+                            // <xliff:g id="number" example="7">%d</xliff:g> minutes
+                            // => "(7) minutes"
+                            String example = element.getAttribute(ATTR_EXAMPLE);
+                            sb.append('(').append(example).append(')');
+                            continue;
+                        } else if (element.hasAttribute(ATTR_ID)) {
+                            // Step <xliff:g id="step_number">%1$d</xliff:g>
+                            // => Step ${step_number}
+                            String id = element.getAttribute(ATTR_ID);
+                            sb.append('$').append('{').append(id).append('}');
+                            continue;
+                        }
+                    }
+
+                    NodeList childNodes = child.getChildNodes();
+                    if (childNodes.getLength() > 0) {
+                        sb.append(getTextNode(childNodes));
+                    }
                     break;
+                }
+                case Node.TEXT_NODE:
+                    sb.append(child.getNodeValue());
+                    break;
+                case Node.CDATA_SECTION_NODE:
+                    sb.append(child.getNodeValue());
+                    break;
+            }
+        }
+
+        return sb.toString();
+    }
+
+    @NonNull
+    private TextResourceValue parseTextValue(@NonNull TextResourceValue value) {
+        NodeList children = mValue.getChildNodes();
+        String text = getTextNode(children);
+        value.setValue(ValueXmlHelper.unescapeResourceString(text, false, true));
+
+        int length = children.getLength();
+        if (length > 1) {
+            boolean haveElementChildren = false;
+            for (int i = 0; i < length; i++) {
+                if (children.item(i).getNodeType() == Node.ELEMENT_NODE) {
+                    haveElementChildren = true;
+                    break;
+                }
+            }
+
+            if (haveElementChildren) {
+                String markupText = getMarkupText(children);
+                value.setRawXmlValue(markupText);
+            }
+        }
+
+        return value;
+    }
+
+    @NonNull
+    private static String getMarkupText(@NonNull NodeList children) {
+        StringBuilder sb = new StringBuilder();
+
+        for (int i = 0, n = children.getLength(); i < n; i++) {
+            Node child = children.item(i);
+
+            short nodeType = child.getNodeType();
+
+            switch (nodeType) {
+                case Node.ELEMENT_NODE: {
+                    Element element = (Element) child;
+                    String tagName = element.getTagName();
+                    sb.append('<');
+                    sb.append(tagName);
+
+                    NamedNodeMap attributes = element.getAttributes();
+                    int attributeCount = attributes.getLength();
+                    if (attributeCount > 0) {
+                        for (int j = 0; j < attributeCount; j++) {
+                            Node attribute = attributes.item(j);
+                            sb.append(' ');
+                            sb.append(attribute.getNodeName());
+                            sb.append('=').append('"');
+                            XmlUtils.appendXmlAttributeValue(sb, attribute.getNodeValue());
+                            sb.append('"');
+                        }
+                    }
+                    sb.append('>');
+
+                    NodeList childNodes = child.getChildNodes();
+                    if (childNodes.getLength() > 0) {
+                        sb.append(getMarkupText(childNodes));
+                    }
+
+                    sb.append('<');
+                    sb.append('/');
+                    sb.append(tagName);
+                    sb.append('>');
+
+                    break;
+                }
                 case Node.TEXT_NODE:
                     sb.append(child.getNodeValue());
                     break;
@@ -529,4 +651,19 @@ public class ResourceItem extends DataItem<ResourceFile>
     public boolean getIgnoredFromDiskMerge() {
         return mIgnoredFromDiskMerge;
     }
+
+    // Used for the blob writing.
+    // TODO: move this to ResourceMerger/Set.
+
+    @Override
+    void addExtraAttributes(Document document, Node node, String namespaceUri) {
+        NodeUtils.addAttribute(document, node, null, ATTR_TYPE, mType.getName());
+    }
+
+    @Override
+    Node getAdoptedNode(Document document) {
+        return NodeUtils.adoptNode(document, mValue);
+    }
+
+
 }

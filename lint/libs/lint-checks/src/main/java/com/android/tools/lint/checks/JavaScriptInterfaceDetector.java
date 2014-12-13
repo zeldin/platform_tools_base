@@ -20,53 +20,44 @@ import com.android.annotations.NonNull;
 import com.android.annotations.Nullable;
 import com.android.tools.lint.detector.api.Category;
 import com.android.tools.lint.detector.api.ClassContext;
-import com.android.tools.lint.detector.api.Context;
 import com.android.tools.lint.detector.api.Detector;
 import com.android.tools.lint.detector.api.Implementation;
 import com.android.tools.lint.detector.api.Issue;
-import com.android.tools.lint.detector.api.LintUtils;
 import com.android.tools.lint.detector.api.Location;
 import com.android.tools.lint.detector.api.Scope;
 import com.android.tools.lint.detector.api.Severity;
 import com.android.tools.lint.detector.api.Speed;
-import com.google.common.collect.Maps;
 
 import org.objectweb.asm.Opcodes;
 import org.objectweb.asm.Type;
 import org.objectweb.asm.tree.AbstractInsnNode;
 import org.objectweb.asm.tree.AnnotationNode;
 import org.objectweb.asm.tree.ClassNode;
-import org.objectweb.asm.tree.FieldInsnNode;
 import org.objectweb.asm.tree.InsnList;
 import org.objectweb.asm.tree.MethodInsnNode;
 import org.objectweb.asm.tree.MethodNode;
 import org.objectweb.asm.tree.TypeInsnNode;
-import org.objectweb.asm.tree.VarInsnNode;
 import org.objectweb.asm.tree.analysis.Analyzer;
 import org.objectweb.asm.tree.analysis.AnalyzerException;
 import org.objectweb.asm.tree.analysis.Frame;
 import org.objectweb.asm.tree.analysis.SourceInterpreter;
 import org.objectweb.asm.tree.analysis.SourceValue;
 
-import java.util.ArrayList;
 import java.util.Collections;
-import java.util.HashSet;
 import java.util.List;
-import java.util.Map;
-import java.util.Set;
 
 /**
- * Looks for add
+ * Looks for addJavascriptInterface calls on interfaces have been properly annotated
+ * with {@code @JavaScriptInterface}
  */
 public class JavaScriptInterfaceDetector extends Detector implements Detector.ClassScanner {
     /** The main issue discovered by this detector */
     public static final Issue ISSUE = Issue.create(
             "JavascriptInterface", //$NON-NLS-1$
             "Missing @JavascriptInterface on methods",
-            "Ensures that interfaces added with addJavascriptInterface are annotated with @JavascriptInterface",
 
             "As of API 17, you must annotate methods in objects registered with the " +
-                    "`addJavascriptInterface` method with a `@JavascriptInterface` annotation.",
+            "`addJavascriptInterface` method with a `@JavascriptInterface` annotation.",
 
             Category.SECURITY,
             8,
@@ -144,8 +135,8 @@ public class JavaScriptInterfaceDetector extends Detector implements Detector.Cl
             Location location = context.getLocation(call);
             context.report(ISSUE, location,
                     "None of the methods in the added interface have been annotated "
-                            + "with @android.webkit.JavascriptInterface; they will not "
-                            + "be visible in API 17", null);
+                            + "with `@android.webkit.JavascriptInterface`; they will not "
+                            + "be visible in API 17");
         }
     }
 

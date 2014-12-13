@@ -19,21 +19,12 @@ package com.android.sdklib.internal.repository.packages;
 import com.android.sdklib.IAndroidTarget;
 import com.android.sdklib.internal.repository.MockPlatformTarget;
 import com.android.sdklib.internal.repository.archives.Archive;
-import com.android.sdklib.internal.repository.archives.Archive.Arch;
-import com.android.sdklib.internal.repository.archives.Archive.Os;
-import com.android.sdklib.internal.repository.packages.PlatformPackage;
 import com.android.sdklib.repository.PkgProps;
 
 import java.util.Properties;
 
 public class PlatformPackageTest extends MinToolsPackageTest {
 
-    /**
-     * PlatformPackage implicitly generates a local archive wrapper
-     * that matches the current platform OS and architecture. Since this
-     * is not convenient for testing, this class overrides it to always
-     * create archives for any OS and any architecture.
-     */
     private static class PlatformPackageWithFakeArchive extends PlatformPackage {
         protected PlatformPackageWithFakeArchive(IAndroidTarget target, Properties props) {
             super(target, props);
@@ -42,12 +33,8 @@ public class PlatformPackageTest extends MinToolsPackageTest {
         @Override
         protected Archive[] initializeArchives(
                 Properties props,
-                Os archiveOs,
-                Arch archiveArch,
                 String archiveOsPath) {
-            assert archiveOs == Os.getCurrentOs();
-            assert archiveArch == Arch.getCurrentArch();
-            return super.initializeArchives(props, Os.ANY, Arch.ANY, LOCAL_ARCHIVE_PATH);
+            return super.initializeArchives(props, LOCAL_ARCHIVE_PATH);
         }
     }
 
@@ -60,8 +47,8 @@ public class PlatformPackageTest extends MinToolsPackageTest {
     }
 
     @Override
-    protected Properties createProps() {
-        Properties props = super.createProps();
+    protected Properties createExpectedProps() {
+        Properties props = super.createExpectedProps();
 
         // PlatformPackage properties
         props.setProperty(PkgProps.VERSION_API_LEVEL, "5");
@@ -83,7 +70,7 @@ public class PlatformPackageTest extends MinToolsPackageTest {
 
     @Override
     public final void testCreate() {
-        Properties props = createProps();
+        Properties props = createExpectedProps();
         PlatformPackage p = createPlatformPackage(props);
 
         testCreatedPlatformPackage(p);
@@ -91,18 +78,17 @@ public class PlatformPackageTest extends MinToolsPackageTest {
 
     @Override
     public void testSaveProperties() {
-        Properties props = createProps();
-        PlatformPackage p = createPlatformPackage(props);
+        Properties expected = createExpectedProps();
+        PlatformPackage p = createPlatformPackage(expected);
 
-        Properties props2 = new Properties();
-        p.saveProperties(props2);
+        Properties actual = new Properties();
+        p.saveProperties(actual);
 
-        assertEquals(props2.toString(), props.toString());
-        assertEquals(props2, props);
+        assertEquals(expected, actual);
     }
 
     public void testInstallId() {
-        Properties props = createProps();
+        Properties props = createExpectedProps();
         PlatformPackage p = createPlatformPackage(props);
 
         assertEquals("android-5", p.installId());

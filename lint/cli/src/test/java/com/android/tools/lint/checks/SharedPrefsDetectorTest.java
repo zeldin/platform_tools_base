@@ -69,8 +69,11 @@ public class SharedPrefsDetectorTest extends AbstractCheckTest {
 
     public void test4() throws Exception {
         // Regression test 3 for http://code.google.com/p/android/issues/detail?id=34322
-        assertEquals(
-            "No warnings.",
+        assertEquals(""
+            + "src/test/pkg/SharedPrefsTest4.java:13: Warning: SharedPreferences.edit() without a corresponding commit() or apply() call [CommitPrefEdits]\n"
+            + "        Editor editor = preferences.edit();\n"
+            + "                        ~~~~~~~~~~~~~~~~~~\n"
+            + "0 errors, 1 warnings\n",
 
             lintProject("src/test/pkg/SharedPrefsTest4.java.txt=>" +
                     "src/test/pkg/SharedPrefsTest4.java"));
@@ -106,4 +109,34 @@ public class SharedPrefsDetectorTest extends AbstractCheckTest {
                     "src/test/pkg/SharedPrefsTest5.java"));
     }
 
+    public void test6() throws Exception {
+        // Regression test for https://code.google.com/p/android/issues/detail?id=68692
+        assertEquals(""
+            + "src/test/pkg/SharedPrefsTest7.java:13: Warning: SharedPreferences.edit() without a corresponding commit() or apply() call [CommitPrefEdits]\n"
+            + "        settings.edit().putString(MY_PREF_KEY, myPrefValue);\n"
+            + "        ~~~~~~~~~~~~~~~\n"
+            + "0 errors, 1 warnings\n",
+
+            lintProject("src/test/pkg/SharedPrefsTest7.java.txt=>" +
+                    "src/test/pkg/SharedPrefsTest7.java"));
+    }
+
+    public void test7() throws Exception {
+        assertEquals("No warnings.", // minSdk < 9: no warnings
+
+                lintProject("src/test/pkg/SharedPrefsTest8.java.txt=>" +
+                        "src/test/pkg/SharedPrefsTest8.java"));
+    }
+
+    public void test8() throws Exception {
+        assertEquals(""
+            + "src/test/pkg/SharedPrefsTest8.java:11: Warning: Consider using apply() instead; commit writes its data to persistent storage immediately, whereas apply will handle it in the background [CommitPrefEdits]\n"
+            + "        editor.commit();\n"
+            + "        ~~~~~~~~~~~~~~~\n"
+            + "0 errors, 1 warnings\n",
+
+            lintProject(
+                    "apicheck/minsdk11.xml=>AndroidManifest.xml",
+                    "src/test/pkg/SharedPrefsTest8.java.txt=>src/test/pkg/SharedPrefsTest8.java"));
+    }
 }

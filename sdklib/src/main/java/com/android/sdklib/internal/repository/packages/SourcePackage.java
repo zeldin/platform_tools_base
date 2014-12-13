@@ -26,11 +26,12 @@ import com.android.sdklib.SdkManager;
 import com.android.sdklib.internal.repository.IDescription;
 import com.android.sdklib.internal.repository.ITaskMonitor;
 import com.android.sdklib.internal.repository.archives.Archive;
-import com.android.sdklib.internal.repository.archives.Archive.Arch;
-import com.android.sdklib.internal.repository.archives.Archive.Os;
 import com.android.sdklib.internal.repository.sources.SdkSource;
 import com.android.sdklib.io.IFileOp;
+import com.android.sdklib.repository.MajorRevision;
 import com.android.sdklib.repository.SdkRepoConstants;
+import com.android.sdklib.repository.descriptors.IPkgDesc;
+import com.android.sdklib.repository.descriptors.PkgDesc;
 
 import org.apache.commons.compress.archivers.zip.ZipArchiveEntry;
 import org.w3c.dom.Node;
@@ -50,6 +51,8 @@ public class SourcePackage extends MajorRevisionPackage implements IAndroidVersi
 
     /** The package version, for platform, add-on and doc packages. */
     private final AndroidVersion mVersion;
+
+    private final IPkgDesc mPkgDesc;
 
     /**
      * Creates a new source package from the attributes and elements of the given XML node.
@@ -76,6 +79,12 @@ public class SourcePackage extends MajorRevisionPackage implements IAndroidVersi
             codeName = null;
         }
         mVersion = new AndroidVersion(apiLevel, codeName);
+
+        mPkgDesc = PkgDesc.Builder
+                .newSource(mVersion,
+                           (MajorRevision) getRevision())
+                .setDescriptions(this)
+                .create();
     }
 
     @VisibleForTesting(visibility=Visibility.PRIVATE)
@@ -100,11 +109,15 @@ public class SourcePackage extends MajorRevisionPackage implements IAndroidVersi
                 null,                       //license
                 null,                       //description
                 null,                       //descUrl
-                Os.getCurrentOs(),          //archiveOs
-                Arch.getCurrentArch(),      //archiveArch
                 localOsPath                 //archiveOsPath
                 );
         mVersion = platformVersion;
+
+        mPkgDesc = PkgDesc.Builder
+                .newSource(mVersion,
+                           (MajorRevision) getRevision())
+                .setDescriptions(this)
+                .create();
     }
 
     /**
@@ -168,10 +181,23 @@ public class SourcePackage extends MajorRevisionPackage implements IAndroidVersi
 
         String longDesc = sb.toString();
 
+        IPkgDesc desc = PkgDesc.Builder
+                .newSource(version != null ? version : new AndroidVersion(0, null),
+                           new MajorRevision(MajorRevision.MISSING_MAJOR_REV))
+                .setDescriptionShort(shortDesc)
+                .create();
+
         return new BrokenPackage(props, shortDesc, longDesc,
                 IMinApiLevelDependency.MIN_API_LEVEL_NOT_SPECIFIED,
                 version==null ? IExactApiLevelDependency.API_LEVEL_INVALID : version.getApiLevel(),
-                srcDir.getAbsolutePath());
+                srcDir.getAbsolutePath(),
+                desc);
+    }
+
+    @Override
+    @NonNull
+    public IPkgDesc getPkgDesc() {
+        return mPkgDesc;
     }
 
     /**
@@ -210,6 +236,11 @@ public class SourcePackage extends MajorRevisionPackage implements IAndroidVersi
      */
     @Override
     public String getListDescription() {
+        String ld = getListDisplay();
+        if (!ld.isEmpty()) {
+            return String.format("%1$s%2$s", ld, isObsolete() ? " (Obsolete)" : "");
+        }
+
         if (mVersion.isPreview()) {
             return String.format("Sources for Android '%1$s' Preview SDK%2$s",
                     mVersion.getCodename(),
@@ -226,6 +257,14 @@ public class SourcePackage extends MajorRevisionPackage implements IAndroidVersi
      */
     @Override
     public String getShortDescription() {
+        String ld = getListDisplay();
+        if (!ld.isEmpty()) {
+            return String.format("%1$s, revision %2$s%3$s",
+                    ld,
+                    getRevision().toShortString(),
+                    isObsolete() ? " (Obsolete)" : "");
+        }
+
         if (mVersion.isPreview()) {
             return String.format("Sources for Android '%1$s' Preview SDK, revision %2$s%3$s",
                 mVersion.getCodename(),

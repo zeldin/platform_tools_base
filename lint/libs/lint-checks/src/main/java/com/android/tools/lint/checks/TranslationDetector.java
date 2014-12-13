@@ -27,7 +27,13 @@ import static com.android.SdkConstants.TAG_STRING_ARRAY;
 import static com.android.SdkConstants.TOOLS_URI;
 
 import com.android.annotations.NonNull;
+import com.android.annotations.Nullable;
 import com.android.annotations.VisibleForTesting;
+import com.android.builder.model.AndroidProject;
+import com.android.builder.model.ProductFlavor;
+import com.android.builder.model.ProductFlavorContainer;
+import com.android.builder.model.Variant;
+import com.android.ide.common.resources.LocaleManager;
 import com.android.resources.ResourceFolderType;
 import com.android.tools.lint.detector.api.Category;
 import com.android.tools.lint.detector.api.Context;
@@ -35,10 +41,12 @@ import com.android.tools.lint.detector.api.Implementation;
 import com.android.tools.lint.detector.api.Issue;
 import com.android.tools.lint.detector.api.LintUtils;
 import com.android.tools.lint.detector.api.Location;
+import com.android.tools.lint.detector.api.Project;
 import com.android.tools.lint.detector.api.ResourceXmlDetector;
 import com.android.tools.lint.detector.api.Scope;
 import com.android.tools.lint.detector.api.Severity;
 import com.android.tools.lint.detector.api.XmlContext;
+import com.google.common.collect.Lists;
 import com.google.common.collect.Maps;
 import com.google.common.collect.Sets;
 
@@ -55,6 +63,7 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.regex.Pattern;
@@ -79,7 +88,6 @@ public class TranslationDetector extends ResourceXmlDetector {
     public static final Issue MISSING = Issue.create(
             "MissingTranslation", //$NON-NLS-1$
             "Incomplete translation",
-            "Checks for incomplete translations where not all strings are translated",
             "If an application has more than one locale, then all the strings declared in " +
             "one language should also be translated in all other languages.\n" +
             "\n" +
@@ -107,7 +115,6 @@ public class TranslationDetector extends ResourceXmlDetector {
     public static final Issue EXTRA = Issue.create(
             "ExtraTranslation", //$NON-NLS-1$
             "Extra translation",
-            "Checks for translations that appear to be unused (no default language string)",
             "If a string appears in a specific language translation file, but there is " +
             "no corresponding string in the default locale, then this string is probably " +
             "unused. (It's technically possible that your application is only intended to " +
@@ -179,7 +186,7 @@ public class TranslationDetector extends ResourceXmlDetector {
     public void afterCheckFile(@NonNull Context context) {
         if (context.getPhase() == 1) {
             // Store this layout's set of ids for full project analysis in afterCheckProject
-            if (context.getProject().getReportIssues() && mNames != null) {
+            if (context.getProject().getReportIssues() && mNames != null && !mNames.isEmpty()) {
                 mFileToNames.put(context.file, mNames);
 
                 Element root = ((XmlContext) context).document.getDocumentElement();
@@ -191,6 +198,7 @@ public class TranslationDetector extends ResourceXmlDetector {
                         }
                         mFileToLocale.put(context.file, locale);
                     }
+                    // Add in English here if not specified? Worry about false positives listing "en" explicitly
                 }
             }
 
@@ -230,10 +238,14 @@ public class TranslationDetector extends ResourceXmlDetector {
                 String name = entry.getKey();
                 String message = mDescriptions.get(name);
 
+                if (location == null) {
+                    location = Location.create(context.getProject().getDir());
+                }
+
                 // We were prepending locations, but we want to prefer the base folders
                 location = Location.reverse(location);
 
-                context.report(issue, location, message, null);
+                context.report(issue, location, message);
             }
         }
     }
@@ -315,45 +327,58 @@ public class TranslationDetector extends ResourceXmlDetector {
         Set<String> defaultStrings = languageToStrings.get(defaultLanguage);
         if (defaultStrings == null) {
             defaultStrings = new HashSet<String>();
+        }
 
-            // See if it looks like the user has named a specific locale as the base language
-            // (this impacts whether we report strings as "extra" or "missing")
-            if (mFileToLocale != null) {
-                Set<String> specifiedLocales = Sets.newHashSet();
-                for (Map.Entry<File, String> entry : mFileToLocale.entrySet()) {
-                    String locale = entry.getValue();
-                    int index = locale.indexOf('-');
-                    if (index != -1) {
-                        locale = locale.substring(0, index);
-                    }
-                    specifiedLocales.add(locale);
+        // See if it looks like the user has named a specific locale as the base language
+        // (this impacts whether we report strings as "extra" or "missing")
+        if (mFileToLocale != null) {
+            Set<String> specifiedLocales = Sets.newHashSet();
+            for (Map.Entry<File, String> entry : mFileToLocale.entrySet()) {
+                String locale = entry.getValue();
+                int index = locale.indexOf('-');
+                if (index != -1) {
+                    locale = locale.substring(0, index);
                 }
-                if (specifiedLocales.size() == 1) {
-                    String first = specifiedLocales.iterator().next();
-                    Set<String> languageStrings = languageToStrings.get(first);
-                    assert languageStrings != null;
-                    defaultStrings.addAll(languageStrings);
+                specifiedLocales.add(locale);
+            }
+            if (specifiedLocales.size() == 1) {
+                String first = specifiedLocales.iterator().next();
+                Set<String> languageStrings = languageToStrings.get(first);
+                assert languageStrings != null;
+                defaultStrings.addAll(languageStrings);
+            }
+        }
+
+        int stringCount = allStrings.size();
+
+        // Treat English is the default language if not explicitly specified
+        if (!sCompleteRegions && !languageToStrings.containsKey("en")
+                && mFileToLocale == null) {  //$NON-NLS-1$
+            // But only if we have an actual region
+            for (String l : languageToStrings.keySet()) {
+                if (l.startsWith("en-")) {  //$NON-NLS-1$
+                    languageToStrings.put("en", defaultStrings); //$NON-NLS-1$
+                    break;
                 }
             }
         }
 
-        // Fast check to see if there's no problem: if the default locale set is the
-        // same as the all set (meaning there are no extra strings in the other languages)
-        // then we can quickly determine if everything is okay by just making sure that
-        // each language defines everything. If that's the case they will all have the same
-        // string count.
-        int stringCount = allStrings.size();
-        if (stringCount == defaultStrings.size()) {
-            boolean haveError = false;
-            for (Map.Entry<String, Set<String>> entry : languageToStrings.entrySet()) {
-                Set<String> strings = entry.getValue();
-                if (stringCount != strings.size()) {
-                    haveError = true;
-                    break;
+        List<String> resConfigLanguages = getResConfigLanguages(context.getMainProject());
+        if (resConfigLanguages != null) {
+            List<String> keys = Lists.newArrayList(languageToStrings.keySet());
+            for (String locale : keys) {
+                if (defaultLanguage.equals(locale)) {
+                    continue;
                 }
-            }
-            if (!haveError) {
-                return;
+                String language = locale;
+                int index = language.indexOf('-');
+                if (index != -1) {
+                    // Strip off region
+                    language = language.substring(0, index);
+                }
+                if (!resConfigLanguages.contains(language)) {
+                    languageToStrings.remove(locale);
+                }
             }
         }
 
@@ -384,6 +409,25 @@ public class TranslationDetector extends ResourceXmlDetector {
             }
         }
 
+        // Fast check to see if there's no problem: if the default locale set is the
+        // same as the all set (meaning there are no extra strings in the other languages)
+        // then we can quickly determine if everything is okay by just making sure that
+        // each language defines everything. If that's the case they will all have the same
+        // string count.
+        if (stringCount == defaultStrings.size()) {
+            boolean haveError = false;
+            for (Map.Entry<String, Set<String>> entry : languageToStrings.entrySet()) {
+                Set<String> strings = entry.getValue();
+                if (stringCount != strings.size()) {
+                    haveError = true;
+                    break;
+                }
+            }
+            if (!haveError) {
+                return;
+            }
+        }
+
         List<String> languages = new ArrayList<String>(languageToStrings.keySet());
         Collections.sort(languages);
         for (String language : languages) {
@@ -410,10 +454,10 @@ public class TranslationDetector extends ResourceXmlDetector {
                             mMissingLocations.put(s, null);
                             String message = mDescriptions.get(s);
                             if (message == null) {
-                                message = String.format("\"%1$s\" is not translated in %2$s",
-                                        s, language);
+                                message = String.format("\"`%1$s`\" is not translated in %2$s",
+                                        s, getLanguageDescription(language));
                             } else {
-                                message = message + ", " + language;
+                                message = message + ", " + getLanguageDescription(language);
                             }
                             mDescriptions.put(s, message);
                         }
@@ -436,7 +480,7 @@ public class TranslationDetector extends ResourceXmlDetector {
                             }
                             mExtraLocations.put(s, null);
                             String message = String.format(
-                                "\"%1$s\" is translated here but not found in default locale", s);
+                                "\"`%1$s`\" is translated here but not found in default locale", s);
                             mDescriptions.put(s, message);
                         }
                     }
@@ -444,6 +488,31 @@ public class TranslationDetector extends ResourceXmlDetector {
             }
         }
     }
+
+    public static String getLanguageDescription(@NonNull String locale) {
+        int index = locale.indexOf('-');
+        String regionCode = null;
+        String languageCode = locale;
+        if (index != -1) {
+            regionCode = locale.substring(index + 2).toUpperCase(Locale.US); // +2: Skip "r"
+            languageCode = locale.substring(0, index).toLowerCase(Locale.US);
+        }
+
+        String languageName = LocaleManager.getLanguageName(languageCode);
+        if (languageName != null) {
+            if (regionCode != null) {
+                String regionName = LocaleManager.getRegionName(regionCode);
+                if (regionName != null) {
+                    languageName = languageName + ": " + regionName;
+                }
+            }
+
+            return String.format("\"%1$s\" (%2$s)", locale, languageName);
+        } else {
+            return '"' + locale + '"';
+        }
+    }
+
 
     /** Look up the language for the given folder name */
     private static String getLanguage(String name) {
@@ -493,7 +562,7 @@ public class TranslationDetector extends ResourceXmlDetector {
             if (mMissingLocations != null && mMissingLocations.containsKey(name)) {
                 String language = getLanguage(context.file.getParentFile().getName());
                 if (language == null) {
-                    if (context.getDriver().isSuppressed(MISSING, element)) {
+                    if (context.getDriver().isSuppressed(context, MISSING, element)) {
                         mMissingLocations.remove(name);
                         return;
                     }
@@ -505,7 +574,7 @@ public class TranslationDetector extends ResourceXmlDetector {
                 }
             }
             if (mExtraLocations != null && mExtraLocations.containsKey(name)) {
-                if (context.getDriver().isSuppressed(EXTRA, element)) {
+                if (context.getDriver().isSuppressed(context, EXTRA, element)) {
                     mExtraLocations.remove(name);
                     return;
                 }
@@ -521,7 +590,7 @@ public class TranslationDetector extends ResourceXmlDetector {
         assert context.getPhase() == 1;
         if (attribute == null || attribute.getValue().isEmpty()) {
             context.report(MISSING, element, context.getLocation(element),
-                    "Missing name attribute in <string> declaration", null);
+                    "Missing `name` attribute in `<string>` declaration");
         } else {
             String name = attribute.getValue();
 
@@ -531,7 +600,7 @@ public class TranslationDetector extends ResourceXmlDetector {
                 if (l != null) {
                     context.report(EXTRA, translatable, context.getLocation(translatable),
                         "Non-translatable resources should only be defined in the base " +
-                        "values/ folder", null);
+                        "`values/` folder");
                 } else {
                     if (mNonTranslatable == null) {
                         mNonTranslatable = new HashSet<String>();
@@ -571,9 +640,9 @@ public class TranslationDetector extends ResourceXmlDetector {
             mNames.add(name);
 
             if (mNonTranslatable != null && mNonTranslatable.contains(name)) {
-                String message = String.format("The resource string \"%1$s\" has been marked as " +
-                        "translatable=\"false\"", name);
-                context.report(EXTRA, attribute, context.getLocation(attribute), message, null);
+                String message = String.format("The resource string \"`%1$s`\" has been marked as " +
+                        "`translatable=\"false\"`", name);
+                context.report(EXTRA, attribute, context.getLocation(attribute), message);
             }
 
             // TBD: Also make sure that the strings are not empty or placeholders?
@@ -603,4 +672,50 @@ public class TranslationDetector extends ResourceXmlDetector {
 
         return true;
     }
+
+    @Nullable
+    private static List<String> getResConfigLanguages(@NonNull Project project) {
+        if (project.isGradleProject() && project.getGradleProjectModel() != null &&
+                project.getCurrentVariant() != null) {
+            Set<String> relevantDensities = Sets.newHashSet();
+            Variant variant = project.getCurrentVariant();
+            List<String> variantFlavors = variant.getProductFlavors();
+            AndroidProject gradleProjectModel = project.getGradleProjectModel();
+
+            addResConfigsFromFlavor(relevantDensities, null,
+                    project.getGradleProjectModel().getDefaultConfig());
+            for (ProductFlavorContainer container : gradleProjectModel.getProductFlavors()) {
+                addResConfigsFromFlavor(relevantDensities, variantFlavors, container);
+            }
+            if (!relevantDensities.isEmpty()) {
+                ArrayList<String> strings = Lists.newArrayList(relevantDensities);
+                Collections.sort(strings);
+                return strings;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Adds in the resConfig values specified by the given flavor container, assuming
+     * it's in one of the relevant variantFlavors, into the given set
+     */
+    private static void addResConfigsFromFlavor(@NonNull Set<String> relevantLanguages,
+            @Nullable List<String> variantFlavors,
+            @NonNull ProductFlavorContainer container) {
+        ProductFlavor flavor = container.getProductFlavor();
+        if (variantFlavors == null || variantFlavors.contains(flavor.getName())) {
+            if (!flavor.getResourceConfigurations().isEmpty()) {
+                for (String resConfig : flavor.getResourceConfigurations()) {
+                    // Look for languages; these are of length 2. (ResConfigs
+                    // can also refer to densities, etc.)
+                    if (resConfig.length() == 2) {
+                        relevantLanguages.add(resConfig);
+                    }
+                }
+            }
+        }
+    }
+
 }

@@ -48,7 +48,6 @@ public class TitleDetector extends ResourceXmlDetector implements JavaScanner {
     public static final Issue ISSUE = Issue.create(
             "MenuTitle", //$NON-NLS-1$
             "Missing menu title",
-            "Ensures that all menu items supply a title",
 
             "From the action bar documentation:\n" +
             // u2014: em dash
@@ -65,7 +64,7 @@ public class TitleDetector extends ResourceXmlDetector implements JavaScanner {
 
             Category.USABILITY,
             5,
-            Severity.WARNING,
+            Severity.ERROR,
             new Implementation(
                     TitleDetector.class,
                     Scope.RESOURCE_FILE_SCOPE))
@@ -109,7 +108,7 @@ public class TitleDetector extends ResourceXmlDetector implements JavaScanner {
             return;
         }
 
-        String message = "Menu items should specify a title";
-        context.report(ISSUE, element, context.getLocation(element), message, null);
+        String message = "Menu items should specify a `title`";
+        context.report(ISSUE, element, context.getLocation(element), message);
     }
 }

@@ -16,11 +16,22 @@
 
 package com.android.tools.lint;
 
+import static com.android.tools.lint.detector.api.TextFormat.RAW;
+import static com.android.tools.lint.detector.api.TextFormat.TEXT;
+
+import com.android.annotations.NonNull;
+import com.android.annotations.Nullable;
+import com.android.tools.lint.detector.api.Issue;
 import com.android.tools.lint.detector.api.Location;
 import com.android.tools.lint.detector.api.Position;
 import com.android.tools.lint.detector.api.Severity;
+import com.android.tools.lint.detector.api.TextFormat;
+import com.android.utils.SdkUtils;
 import com.google.common.annotations.Beta;
+import com.google.common.base.Joiner;
+import com.google.common.base.Splitter;
 
+import java.io.File;
 import java.io.IOException;
 import java.io.Writer;
 import java.util.List;
@@ -35,32 +46,56 @@ import java.util.List;
 public class TextReporter extends Reporter {
     private final Writer mWriter;
     private final boolean mClose;
+    private final LintCliFlags mFlags;
 
     /**
      * Constructs a new {@link TextReporter}
      *
      * @param client the client
+     * @param flags the flags
      * @param writer the writer to write into
      * @param close whether the writer should be closed when done
      */
-    public TextReporter(LintCliClient client, Writer writer, boolean close) {
-        super(client, null);
+    public TextReporter(@NonNull LintCliClient client, @NonNull LintCliFlags flags,
+            @NonNull Writer writer, boolean close) {
+        this(client, flags, null, writer, close);
+    }
+
+    /**
+     * Constructs a new {@link TextReporter}
+     *
+     * @param client the client
+     * @param flags the flags
+     * @param file the file corresponding to the writer, if any
+     * @param writer the writer to write into
+     * @param close whether the writer should be closed when done
+     */
+    public TextReporter(@NonNull LintCliClient client, @NonNull LintCliFlags flags,
+            @Nullable File file, @NonNull Writer writer, boolean close) {
+        super(client, file);
+        mFlags = flags;
         mWriter = writer;
         mClose = close;
     }
 
     @Override
     public void write(int errorCount, int warningCount, List<Warning> issues) throws IOException {
-        boolean abbreviate = mClient.getDriver().isAbbreviating();
+        boolean abbreviate = !mFlags.isShowEverything();
 
         StringBuilder output = new StringBuilder(issues.size() * 200);
         if (issues.isEmpty()) {
-            mWriter.write('\n');
-            mWriter.write("No issues found.");
-            mWriter.write('\n');
-            mWriter.flush();
+            if (mDisplayEmpty) {
+                mWriter.write("No issues found.");
+                mWriter.write('\n');
+                mWriter.flush();
+            }
         } else {
+            Issue lastIssue = null;
             for (Warning warning : issues) {
+                if (warning.issue != lastIssue) {
+                    explainIssue(output, lastIssue);
+                    lastIssue = warning.issue;
+                }
                 int startLength = output.length();
 
                 if (warning.path != null) {
@@ -86,7 +121,8 @@ public class TextReporter extends Reporter {
                 output.append(':');
                 output.append(' ');
 
-                output.append(warning.message);
+                output.append(RAW.convertTo(warning.message, TEXT));
+
                 if (warning.issue != null) {
                     output.append(' ').append('[');
                     output.append(warning.issue.getId());
@@ -101,6 +137,7 @@ public class TextReporter extends Reporter {
 
                 if (warning.location != null && warning.location.getSecondary() != null) {
                     Location location = warning.location.getSecondary();
+                    boolean omitted = false;
                     while (location != null) {
                         if (location.getMessage() != null
                                 && !location.getMessage().isEmpty()) {
@@ -122,23 +159,25 @@ public class TextReporter extends Reporter {
                                     && !location.getMessage().isEmpty()) {
                                 output.append(':');
                                 output.append(' ');
-                                output.append(location.getMessage());
+                                output.append(RAW.convertTo(location.getMessage(), TEXT));
                             }
 
                             output.append('\n');
+                        } else {
+                            omitted = true;
                         }
 
                         location = location.getSecondary();
                     }
 
-                    if (!abbreviate) {
+                    if (!abbreviate && omitted) {
                         location = warning.location.getSecondary();
                         StringBuilder sb = new StringBuilder(100);
                         sb.append("Also affects: ");
                         int begin = sb.length();
                         while (location != null) {
                             if (location.getMessage() == null
-                                    || !location.getMessage().isEmpty()) {
+                                    || location.getMessage().isEmpty()) {
                                 if (sb.length() > begin) {
                                     sb.append(", ");
                                 }
@@ -163,7 +202,21 @@ public class TextReporter extends Reporter {
                         output.append(wrapped);
                     }
                 }
+
+                if (warning.isVariantSpecific()) {
+                    List<String> names;
+                    if (warning.includesMoreThanExcludes()) {
+                        output.append("Applies to variants: ");
+                        names = warning.getIncludedVariantNames();
+                    } else {
+                        output.append("Does not apply to variants: ");
+                        names = warning.getExcludedVariantNames();
+                    }
+                    output.append(Joiner.on(", ").join(names));
+                    output.append('\n');
+                }
             }
+            explainIssue(output, lastIssue);
 
             mWriter.write(output.toString());
 
@@ -173,7 +226,53 @@ public class TextReporter extends Reporter {
             mWriter.flush();
             if (mClose) {
                 mWriter.close();
+
+                if (!mClient.getFlags().isQuiet() && mOutput != null) {
+                    String path = mOutput.getAbsolutePath();
+                    System.out.println(String.format("Wrote text report to %1$s", path));
+                }
             }
         }
+    }
+
+    private void explainIssue(@NonNull StringBuilder output, @Nullable Issue issue)
+            throws IOException {
+        if (issue == null || !mFlags.isExplainIssues()) {
+            return;
+        }
+
+        String explanation = issue.getExplanation(TextFormat.TEXT);
+        if (explanation.trim().isEmpty()) {
+            return;
+        }
+
+        String indent = "   ";
+        String formatted = SdkUtils.wrap(explanation, Main.MAX_LINE_WIDTH - indent.length(), null);
+        output.append('\n');
+        output.append(indent);
+        output.append("Explanation for issues of type \"").append(issue.getId()).append("\":\n");
+        for (String line : Splitter.on('\n').split(formatted)) {
+            if (!line.isEmpty()) {
+                output.append(indent);
+                output.append(line);
+            }
+            output.append('\n');
+        }
+        List<String> moreInfo = issue.getMoreInfo();
+        if (!moreInfo.isEmpty()) {
+            for (String url : moreInfo) {
+                if (formatted.contains(url)) {
+                    continue;
+                }
+                output.append(indent);
+                output.append(url);
+                output.append('\n');
+            }
+            output.append('\n');
+        }
+    }
+
+    boolean isWriteToConsole() {
+        return mOutput == null;
     }
 }

@@ -54,14 +54,14 @@ import java.util.Map.Entry;
 /**
  * Checks for missing manifest registrations for activities, services etc
  * and also makes sure that they are registered with the correct tag
+ * <p>
+ * TODO: Rewrite as Java visitor!
  */
 public class RegistrationDetector extends LayoutDetector implements ClassScanner {
     /** Unregistered activities and services */
     public static final Issue ISSUE = Issue.create(
             "Registered", //$NON-NLS-1$
             "Class is not registered in the manifest",
-            "Ensures that Activities, Services and Content Providers are registered in the " +
-            "manifest",
 
             "Activities, services and content providers should be registered in the " +
             "`AndroidManifest.xml` file using `<activity>`, `<service>` and `<provider>` tags.\n" +
@@ -201,18 +201,23 @@ public class RegistrationDetector extends LayoutDetector implements ClassScanner
                     ISSUE,
                     location,
                     String.format(
-                            "%1$s is a <%2$s> but is registered in the manifest as a <%3$s>",
-                            className, tag, classToTag(wrongClass)),
-                    null);
+                            "`%1$s` is a `<%2$s>` but is registered in the manifest as a `<%3$s>`",
+                            className, tag, classToTag(wrongClass)));
         } else if (!tag.equals(TAG_RECEIVER)) { // don't need to be registered
+            if (context.getMainProject().isGradleProject()) {
+                // Disabled for now; we need to formalize the difference between
+                // the *manifest* package and the variant package, since in some contexts
+                // (such as manifest registrations) we should be using the manifest package,
+                // not the gradle package
+                return;
+            }
             Location location = context.getLocation(classNode);
             context.report(
                     ISSUE,
                     location,
                     String.format(
-                            "The <%1$s> %2$s is not registered in the manifest",
-                            tag, className),
-                    null);
+                            "The `<%1$s> %2$s` is not registered in the manifest",
+                            tag, className));
         }
     }
 

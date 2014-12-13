@@ -53,6 +53,13 @@ public class SessionParams extends RenderParams {
     private boolean mLayoutOnly = false;
     private Map<ResourceReference, AdapterBinding> mAdapterBindingMap;
     private boolean mExtendedViewInfoMode = false;
+    private final int mSimulatedPlatformVersion;
+
+    /**
+     * A flexible map to pass additional flags to LayoutLib. LayoutLib will ignore flags that it
+     * doesn't recognize.
+     */
+    private Map<Key, Object> mFlags;
 
     /**
      *
@@ -77,22 +84,55 @@ public class SessionParams extends RenderParams {
             IProjectCallback projectCallback,
             int minSdkVersion, int targetSdkVersion,
             LayoutLog log) {
-        super(projectKey, hardwareConfig,
-                renderResources, projectCallback, minSdkVersion, targetSdkVersion, log);
+        this(layoutDescription, renderingMode, projectKey, hardwareConfig,
+                renderResources, projectCallback, minSdkVersion, targetSdkVersion, log, 0);
+    }
+
+    /**
+     *
+     * @param layoutDescription the {@link ILayoutPullParser} letting the LayoutLib Bridge visit the
+     * layout file.
+     * @param renderingMode The rendering mode.
+     * @param projectKey An Object identifying the project. This is used for the cache mechanism.
+     * @param hardwareConfig the {@link HardwareConfig}.
+     * @param renderResources a {@link RenderResources} object providing access to the resources.
+     * @param projectCallback The {@link IProjectCallback} object to get information from
+     * the project.
+     * @param minSdkVersion the minSdkVersion of the project
+     * @param targetSdkVersion the targetSdkVersion of the project
+     * @param log the object responsible for displaying warning/errors to the user.
+     * @param simulatedPlatformVersion try to simulate an old android platform. 0 means disabled.
+     */
+    public SessionParams(
+            ILayoutPullParser layoutDescription,
+            RenderingMode renderingMode,
+            Object projectKey,
+            HardwareConfig hardwareConfig,
+            RenderResources renderResources,
+            IProjectCallback projectCallback,
+            int minSdkVersion, int targetSdkVersion,
+            LayoutLog log, int simulatedPlatformVersion) {
+        super(projectKey, hardwareConfig, renderResources, projectCallback,
+                minSdkVersion, targetSdkVersion, log);
 
         mLayoutDescription = layoutDescription;
         mRenderingMode = renderingMode;
+        mSimulatedPlatformVersion = simulatedPlatformVersion;
     }
 
     public SessionParams(SessionParams params) {
         super(params);
         mLayoutDescription = params.mLayoutDescription;
         mRenderingMode = params.mRenderingMode;
+        mSimulatedPlatformVersion = params.mSimulatedPlatformVersion;
         if (params.mAdapterBindingMap != null) {
             mAdapterBindingMap = new HashMap<ResourceReference, AdapterBinding>(
                     params.mAdapterBindingMap);
         }
         mExtendedViewInfoMode = params.mExtendedViewInfoMode;
+        if (params.mFlags != null) {
+            mFlags = new HashMap<Key, Object>(params.mFlags);
+        }
     }
 
     public ILayoutPullParser getLayoutDescription() {
@@ -133,5 +173,55 @@ public class SessionParams extends RenderParams {
 
     public boolean getExtendedViewInfoMode() {
         return mExtendedViewInfoMode;
+    }
+
+    public int getSimulatedPlatformVersion() {
+        return mSimulatedPlatformVersion;
+    }
+
+    public <T> void setFlag(Key<T> key, T value) {
+        if (mFlags == null) {
+            mFlags = new HashMap<Key, Object>();
+        }
+        mFlags.put(key, value);
+    }
+
+    public <T> T getFlag(Key<T> key) {
+
+        // noinspection since the values in the map can be added only by setFlag which ensures that
+        // the types match.
+        //noinspection unchecked
+        return mFlags == null ? null : (T) mFlags.get(key);
+    }
+
+    public static class Key<T> {
+        public final Class<T> mExpectedClass;
+        public final String mName;
+
+        public Key(String name, Class<T> expectedClass) {
+            assert name != null;
+            assert expectedClass != null;
+
+            mExpectedClass = expectedClass;
+            mName = name;
+        }
+
+        @Override
+        public int hashCode() {
+            int result = mExpectedClass.hashCode();
+            return 31 * result + mName.hashCode();
+        }
+
+        @Override
+        public boolean equals(Object obj) {
+            if (this == obj) {
+                return true;
+            }
+            if (obj != null && getClass() == obj.getClass()) {
+                Key k = (Key) obj;
+                return mExpectedClass.equals(k.mExpectedClass) && mName.equals(k.mName);
+            }
+            return false;
+        }
     }
 }

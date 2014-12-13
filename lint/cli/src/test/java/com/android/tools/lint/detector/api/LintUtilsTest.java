@@ -16,25 +16,40 @@
 
 package com.android.tools.lint.detector.api;
 
+import static com.android.tools.lint.detector.api.LintUtils.computeResourceName;
+import static com.android.tools.lint.detector.api.LintUtils.convertVersion;
+import static com.android.tools.lint.detector.api.LintUtils.findSubstring;
+import static com.android.tools.lint.detector.api.LintUtils.getFormattedParameters;
 import static com.android.tools.lint.detector.api.LintUtils.getLocaleAndRegion;
 import static com.android.tools.lint.detector.api.LintUtils.isImported;
 import static com.android.tools.lint.detector.api.LintUtils.splitPath;
+import static org.easymock.EasyMock.createNiceMock;
+import static org.easymock.EasyMock.expect;
+import static org.easymock.EasyMock.replay;
 
+import com.android.annotations.NonNull;
 import com.android.annotations.Nullable;
+import com.android.builder.model.AndroidProject;
+import com.android.builder.model.ApiVersion;
+import com.android.sdklib.AndroidVersion;
+import com.android.sdklib.IAndroidTarget;
+import com.android.tools.lint.EcjParser;
 import com.android.tools.lint.LintCliClient;
-import com.android.tools.lint.LombokParser;
 import com.android.tools.lint.checks.BuiltinIssueRegistry;
-import com.android.tools.lint.client.api.IJavaParser;
+import com.android.tools.lint.client.api.JavaParser;
 import com.android.tools.lint.client.api.LintDriver;
 import com.google.common.collect.Iterables;
+
+import junit.framework.TestCase;
 
 import java.io.BufferedOutputStream;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.OutputStreamWriter;
 import java.util.Arrays;
+import java.util.Collections;
+import java.util.Locale;
 
-import junit.framework.TestCase;
 import lombok.ast.Node;
 
 @SuppressWarnings("javadoc")
@@ -207,6 +222,7 @@ public class LintUtilsTest extends TestCase {
 
     private static void checkEncoding(String encoding, boolean writeBom, String lineEnding)
             throws Exception {
+        @SuppressWarnings("StringBufferReplaceableByString")
         StringBuilder sb = new StringBuilder();
 
         // Norwegian extra vowel characters such as "latin small letter a with ring above"
@@ -220,7 +236,7 @@ public class LintUtilsTest extends TestCase {
         OutputStreamWriter writer = new OutputStreamWriter(stream, encoding);
 
         if (writeBom) {
-            String normalized = encoding.toLowerCase().replace("-", "_");
+            String normalized = encoding.toLowerCase(Locale.US).replace("-", "_");
             if (normalized.equals("utf_8")) {
                 stream.write(0xef);
                 stream.write(0xbb);
@@ -332,21 +348,151 @@ public class LintUtilsTest extends TestCase {
                 "android.app.Activity"));
     }
 
-    private Node getCompilationUnit(String javaSource) {
-        IJavaParser parser = new LombokParser();
-        TestContext context = new TestContext(javaSource, new File("test"));
+    public void testComputeResourceName() {
+        assertEquals("", computeResourceName("", ""));
+        assertEquals("foo", computeResourceName("", "foo"));
+        assertEquals("foo", computeResourceName("foo", ""));
+        assertEquals("prefix_name", computeResourceName("prefix_", "name"));
+        assertEquals("prefixName", computeResourceName("prefix", "name"));
+    }
+
+    public static Node getCompilationUnit(String javaSource) {
+        return getCompilationUnit(javaSource, new File("test"));
+    }
+
+    public static Node getCompilationUnit(final String javaSource, final File relativePath) {
+        File dir = new File("projectDir");
+        final File fullPath = new File(dir, relativePath.getPath());
+        LintCliClient client = new LintCliClient() {
+            @NonNull
+            @Override
+            public String readFile(@NonNull File file) {
+                if (file.getPath().equals(fullPath.getPath())) {
+                    return javaSource;
+                }
+                return super.readFile(file);
+            }
+
+            @Nullable
+            @Override
+            public IAndroidTarget getCompileTarget(@NonNull Project project) {
+                IAndroidTarget[] targets = getTargets();
+                for (int i = targets.length - 1; i >= 0; i--) {
+                    IAndroidTarget target = targets[i];
+                    if (target.isPlatform()) {
+                        return target;
+                    }
+                }
+
+                return super.getCompileTarget(project);
+            }
+        };
+        Project project = client.getProject(dir, dir);
+
+        LintDriver driver = new LintDriver(new BuiltinIssueRegistry(),
+                new LintCliClient());
+        driver.setScope(Scope.JAVA_FILE_SCOPE);
+        TestContext context = new TestContext(driver, client, project, javaSource, fullPath);
+        JavaParser parser = new EcjParser(client, project);
+        parser.prepareJavaParse(Collections.<JavaContext>singletonList(context));
         Node compilationUnit = parser.parseJava(context);
         assertNotNull(javaSource, compilationUnit);
         return compilationUnit;
     }
 
-    private class TestContext extends JavaContext {
+    public void testConvertVersion() {
+        assertEquals(new AndroidVersion(5, null), convertVersion(new DefaultApiVersion(5, null),
+                null));
+        assertEquals(new AndroidVersion(19, null), convertVersion(new DefaultApiVersion(19, null),
+                null));
+        //noinspection SpellCheckingInspection
+        assertEquals(new AndroidVersion(18, "KITKAT"), // a preview platform API level is not final
+                convertVersion(new DefaultApiVersion(0, "KITKAT"),
+                null));
+    }
+
+    public void testIsModelOlderThan() throws Exception {
+        AndroidProject project = createNiceMock(AndroidProject.class);
+        expect(project.getModelVersion()).andReturn("0.10.4").anyTimes();
+        replay(project);
+
+        assertTrue(LintUtils.isModelOlderThan(project, 0, 10, 5));
+        assertTrue(LintUtils.isModelOlderThan(project, 0, 11, 0));
+        assertTrue(LintUtils.isModelOlderThan(project, 0, 11, 4));
+        assertTrue(LintUtils.isModelOlderThan(project, 1, 0, 0));
+
+        project = createNiceMock(AndroidProject.class);
+        expect(project.getModelVersion()).andReturn("0.11.0").anyTimes();
+        replay(project);
+
+        assertTrue(LintUtils.isModelOlderThan(project, 1, 0, 0));
+        assertFalse(LintUtils.isModelOlderThan(project, 0, 11, 0));
+        assertFalse(LintUtils.isModelOlderThan(project, 0, 10, 4));
+
+        project = createNiceMock(AndroidProject.class);
+        expect(project.getModelVersion()).andReturn("0.11.5").anyTimes();
+        replay(project);
+
+        assertTrue(LintUtils.isModelOlderThan(project, 1, 0, 0));
+        assertFalse(LintUtils.isModelOlderThan(project, 0, 11, 0));
+
+        project = createNiceMock(AndroidProject.class);
+        expect(project.getModelVersion()).andReturn("1.0.0").anyTimes();
+        replay(project);
+
+        assertTrue(LintUtils.isModelOlderThan(project, 1, 0, 1));
+        assertFalse(LintUtils.isModelOlderThan(project, 1, 0, 0));
+        assertFalse(LintUtils.isModelOlderThan(project, 0, 11, 0));
+    }
+
+    private static final class DefaultApiVersion implements ApiVersion {
+        private final int mApiLevel;
+        private final String mCodename;
+
+        public DefaultApiVersion(int apiLevel, @Nullable String codename) {
+            mApiLevel = apiLevel;
+            mCodename = codename;
+        }
+
+        @Override
+        public int getApiLevel() {
+            return mApiLevel;
+        }
+
+        @Nullable
+        @Override
+        public String getCodename() {
+            return mCodename;
+        }
+
+        @NonNull
+        @Override
+        public String getApiString() {
+            fail("Not needed in this test");
+            return "<invalid>";
+        }
+    }
+
+    public void testFindSubstring() {
+       assertEquals("foo", findSubstring("foo", null, null));
+       assertEquals("foo", findSubstring("foo  ", null, "  "));
+       assertEquals("foo", findSubstring("  foo", "  ", null));
+       assertEquals("foo", findSubstring("[foo]", "[", "]"));
+    }
+
+    public void testGetFormattedParameters() {
+        assertEquals(Arrays.asList("foo","bar"),
+                getFormattedParameters("Prefix %1$s Divider %2$s Suffix",
+                        "Prefix foo Divider bar Suffix"));
+    }
+
+    private static class TestContext extends JavaContext {
         private final String mJavaSource;
-        public TestContext(String javaSource, File file) {
-            super(new LintDriver(new BuiltinIssueRegistry(),
-                    new LintCliClient()), new LintCliClient().getProject(new File("dummy"),
-                    new File("dummy")),
-                    null, file);
+        public TestContext(LintDriver driver, LintCliClient client, Project project,
+                String javaSource, File file) {
+            //noinspection ConstantConditions
+            super(driver, project,
+                    null, file, client.getJavaParser(null));
 
             mJavaSource = javaSource;
         }

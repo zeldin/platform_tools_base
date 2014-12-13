@@ -1,13 +1,13 @@
 <?xml version="1.0"?>
 <template
-    format="3"
-    revision="1"
-    name="New IntentService"
+    format="4"
+    revision="2"
+    name="Service (IntentService)"
     description="Creates a new intent service class."
     minApi="3"
     minBuildApi="3">
 
-    <category value="Other" />
+    <category value="Service" />
 
     <parameter
         id="className"

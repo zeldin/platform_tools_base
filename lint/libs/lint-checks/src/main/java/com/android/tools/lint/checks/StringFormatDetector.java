@@ -23,12 +23,30 @@ import static com.android.SdkConstants.GET_STRING_METHOD;
 import static com.android.SdkConstants.R_CLASS;
 import static com.android.SdkConstants.R_PREFIX;
 import static com.android.SdkConstants.TAG_STRING;
+import static com.android.tools.lint.checks.SharedPrefsDetector.ANDROID_CONTENT_SHARED_PREFERENCES;
+import static com.android.tools.lint.client.api.JavaParser.TYPE_BOOLEAN;
+import static com.android.tools.lint.client.api.JavaParser.TYPE_BYTE;
+import static com.android.tools.lint.client.api.JavaParser.TYPE_CHAR;
+import static com.android.tools.lint.client.api.JavaParser.TYPE_DOUBLE;
+import static com.android.tools.lint.client.api.JavaParser.TYPE_FLOAT;
+import static com.android.tools.lint.client.api.JavaParser.TYPE_INT;
+import static com.android.tools.lint.client.api.JavaParser.TYPE_LONG;
+import static com.android.tools.lint.client.api.JavaParser.TYPE_NULL;
+import static com.android.tools.lint.client.api.JavaParser.TYPE_OBJECT;
+import static com.android.tools.lint.client.api.JavaParser.TYPE_SHORT;
+import static com.android.tools.lint.client.api.JavaParser.TYPE_STRING;
+import static com.android.tools.lint.client.api.JavaParser.TypeDescriptor;
 
 import com.android.annotations.NonNull;
 import com.android.annotations.Nullable;
 import com.android.annotations.VisibleForTesting;
+import com.android.ide.common.rendering.api.ResourceValue;
+import com.android.ide.common.res2.AbstractResourceRepository;
+import com.android.ide.common.res2.ResourceItem;
 import com.android.resources.ResourceFolderType;
-import com.android.tools.lint.client.api.IJavaParser;
+import com.android.resources.ResourceType;
+import com.android.tools.lint.client.api.JavaParser;
+import com.android.tools.lint.client.api.LintClient;
 import com.android.tools.lint.detector.api.Category;
 import com.android.tools.lint.detector.api.Context;
 import com.android.tools.lint.detector.api.Detector;
@@ -44,6 +62,9 @@ import com.android.tools.lint.detector.api.Scope;
 import com.android.tools.lint.detector.api.Severity;
 import com.android.tools.lint.detector.api.XmlContext;
 import com.android.utils.Pair;
+import com.google.common.collect.Lists;
+import com.google.common.collect.Maps;
+import com.google.common.collect.Sets;
 
 import org.w3c.dom.Element;
 import org.w3c.dom.Node;
@@ -65,6 +86,7 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 import lombok.ast.AstVisitor;
+import lombok.ast.BooleanLiteral;
 import lombok.ast.CharLiteral;
 import lombok.ast.ConstructorDeclaration;
 import lombok.ast.ConstructorInvocation;
@@ -78,7 +100,6 @@ import lombok.ast.NullLiteral;
 import lombok.ast.Select;
 import lombok.ast.StrictListAccessor;
 import lombok.ast.StringLiteral;
-import lombok.ast.TypeReference;
 import lombok.ast.VariableDefinitionEntry;
 import lombok.ast.VariableReference;
 
@@ -86,24 +107,25 @@ import lombok.ast.VariableReference;
  * Check which looks for problems with formatting strings such as inconsistencies between
  * translations or between string declaration and string usage in Java.
  * <p>
+ * TODO: Verify booleans!
  * TODO: Handle Resources.getQuantityString as well
  */
 public class StringFormatDetector extends ResourceXmlDetector implements Detector.JavaScanner {
-
     private static final Implementation IMPLEMENTATION_XML = new Implementation(
             StringFormatDetector.class,
             Scope.ALL_RESOURCES_SCOPE);
 
+    @SuppressWarnings("unchecked")
     private static final Implementation IMPLEMENTATION_XML_AND_JAVA = new Implementation(
             StringFormatDetector.class,
-            EnumSet.of(Scope.ALL_RESOURCE_FILES, Scope.JAVA_FILE));
+            EnumSet.of(Scope.ALL_RESOURCE_FILES, Scope.JAVA_FILE),
+            Scope.JAVA_FILE_SCOPE);
 
 
     /** Whether formatting strings are invalid */
     public static final Issue INVALID = Issue.create(
             "StringFormatInvalid", //$NON-NLS-1$
             "Invalid format string",
-            "Checks that format strings are valid",
 
             "If a string contains a '%' character, then the string may be a formatting string " +
             "which will be passed to `String.format` from Java code to replace each '%' " +
@@ -130,14 +152,15 @@ public class StringFormatDetector extends ResourceXmlDetector implements Detecto
     /** Whether formatting argument types are consistent across translations */
     public static final Issue ARG_COUNT = Issue.create(
             "StringFormatCount", //$NON-NLS-1$
-            "Formatting argument types inconsistent across translations",
-            "Ensures that all format strings are used and that the same number is defined "
-                + "across translations",
+            "Formatting argument types incomplete or inconsistent",
 
             "When a formatted string takes arguments, it usually needs to reference the " +
-            "same arguments in all translations. There are cases where this is not the case, " +
-            "so this issue is a warning rather than an error by default. However, this usually " +
-            "happens when a language is not translated or updated correctly.",
+            "same arguments in all translations (or all arguments if there are no " +
+            "translations.\n" +
+            "\n" +
+            "There are cases where this is not the case, so this issue is a warning rather " +
+            "than an error by default. However, this usually happens when a language is not " +
+            "translated or updated correctly.",
             Category.MESSAGES,
             5,
             Severity.WARNING,
@@ -147,8 +170,6 @@ public class StringFormatDetector extends ResourceXmlDetector implements Detecto
     public static final Issue ARG_TYPES = Issue.create(
             "StringFormatMatches", //$NON-NLS-1$
             "`String.format` string doesn't match the XML format string",
-            "Ensures that the format used in `<string>` definitions is compatible with the "
-                + "`String.format` call",
 
             "This lint check ensures the following:\n" +
             "(1) If there are multiple translations of the format string, then all translations " +
@@ -270,7 +291,7 @@ public class StringFormatDetector extends ResourceXmlDetector implements Detecto
                 String formatted = element.getAttribute("formatted"); //$NON-NLS-1$
                 if (!formatted.isEmpty() && !Boolean.parseBoolean(formatted)) {
                     if (!mNotFormatStrings.containsKey(name)) {
-                        Handle handle = context.parser.createLocationHandle(context, element);
+                        Handle handle = context.createLocationHandle(element);
                         handle.setClientData(element);
                         mNotFormatStrings.put(name, handle);
                     }
@@ -284,7 +305,7 @@ public class StringFormatDetector extends ResourceXmlDetector implements Detecto
                 Matcher matcher = FORMAT.matcher(text);
                 if (!matcher.find(j)) {
                     if (!mNotFormatStrings.containsKey(name)) {
-                        Handle handle = context.parser.createLocationHandle(context, element);
+                        Handle handle = context.createLocationHandle(element);
                         handle.setClientData(element);
                         mNotFormatStrings.put(name, handle);
                     }
@@ -326,7 +347,7 @@ public class StringFormatDetector extends ResourceXmlDetector implements Detecto
                 list = new ArrayList<Pair<Handle, String>>();
                 mFormatStrings.put(name, list);
             }
-            Handle handle = context.parser.createLocationHandle(context, element);
+            Handle handle = context.createLocationHandle(element);
             handle.setClientData(element);
             list.add(Pair.of(handle, text));
         }
@@ -390,7 +411,7 @@ public class StringFormatDetector extends ResourceXmlDetector implements Detecto
 
                     index = matcher.end(); // Ensure loop proceeds
                     String str = formatString.substring(matchStart, matcher.end());
-                    if (str.equals("%%")) { //$NON-NLS-1$
+                    if (str.equals("%%") || str.equals("%n")) { //$NON-NLS-1$ //$NON-NLS-2$
                         // Just an escaped %
                         continue;
                     }
@@ -410,7 +431,7 @@ public class StringFormatDetector extends ResourceXmlDetector implements Detecto
                             if (last != 'd' && last != 'o' && last != 'x' && last != 'X') {
                                 Object clientData = handle.getClientData();
                                 if (clientData instanceof Node) {
-                                    if (context.getDriver().isSuppressed(INVALID,
+                                    if (context.getDriver().isSuppressed(null, INVALID,
                                             (Node) clientData)) {
                                         return;
                                     }
@@ -418,9 +439,9 @@ public class StringFormatDetector extends ResourceXmlDetector implements Detecto
 
                                 Location location = handle.resolve();
                                 String message = String.format(
-                                        "Incorrect formatting string %1$s; missing conversion " +
-                                        "character in '%2$s' ?", name, str);
-                                context.report(INVALID, location, message, null);
+                                        "Incorrect formatting string `%1$s`; missing conversion " +
+                                        "character in '`%2$s`' ?", name, str);
+                                context.report(INVALID, location, message);
                                 //warned = true;
                                 continue;
                             }
@@ -453,7 +474,8 @@ public class StringFormatDetector extends ResourceXmlDetector implements Detecto
 
                         Object clientData = handle.getClientData();
                         if (clientData instanceof Node) {
-                            if (context.getDriver().isSuppressed(ARG_TYPES, (Node) clientData)) {
+                            if (context.getDriver().isSuppressed(null, ARG_TYPES,
+                                    (Node) clientData)) {
                                 return;
                             }
                         }
@@ -469,14 +491,14 @@ public class StringFormatDetector extends ResourceXmlDetector implements Detecto
                         File f = otherLocation.getFile();
                         String message = String.format(
                                 "Inconsistent formatting types for argument #%1$d in " +
-                                "format string %2$s ('%3$s'): Found both '%4$s' and '%5$s' " +
+                                "format string `%2$s` ('%3$s'): Found both '`%4$s`' and '`%5$s`' " +
                                 "(in %6$s)",
                                 number, name,
                                 str,
                                 currentFormat, format,
                                 f.getParentFile().getName() + File.separator + f.getName());
                         //warned = true;
-                        context.report(ARG_TYPES, location, message, null);
+                        context.report(ARG_TYPES, location, message);
                         break;
                     }
                 } else {
@@ -582,17 +604,16 @@ public class StringFormatDetector extends ResourceXmlDetector implements Detecto
     private static Location refineLocation(Context context, Location location,
             String formatString, int substringStart, int substringEnd) {
         Position startLocation = location.getStart();
-        Position endLocation = location.getStart();
+        Position endLocation = location.getEnd();
         if (startLocation != null && endLocation != null) {
             int startOffset = startLocation.getOffset();
             int endOffset = endLocation.getOffset();
             if (startOffset >= 0) {
                 String contents = context.getClient().readFile(location.getFile());
-                if (contents != null
-                        && endOffset <= contents.length() && startOffset < endOffset) {
+                if (endOffset <= contents.length() && startOffset < endOffset) {
                     int formatOffset = contents.indexOf(formatString, startOffset);
                     if (formatOffset != -1 && formatOffset <= endOffset) {
-                        return Location.create(context.file, contents,
+                        return Location.create(location.getFile(), contents,
                                 formatOffset + substringStart, formatOffset + substringEnd);
                     }
                 }
@@ -616,7 +637,7 @@ public class StringFormatDetector extends ResourceXmlDetector implements Detecto
             if (prevCount != -1 && prevCount != count) {
                 Object clientData = handle.getClientData();
                 if (clientData instanceof Node) {
-                    if (context.getDriver().isSuppressed(ARG_COUNT, (Node) clientData)) {
+                    if (context.getDriver().isSuppressed(null, ARG_COUNT, (Node) clientData)) {
                         return;
                     }
                 }
@@ -625,9 +646,9 @@ public class StringFormatDetector extends ResourceXmlDetector implements Detecto
                 secondary.setMessage("Conflicting number of arguments here");
                 location.setSecondary(secondary);
                 String message = String.format(
-                        "Inconsistent number of arguments in formatting string %1$s; " +
+                        "Inconsistent number of arguments in formatting string `%1$s`; " +
                         "found both %2$d and %3$d", name, prevCount, count);
-                context.report(ARG_COUNT, location, message, null);
+                context.report(ARG_COUNT, location, message);
                 break;
             }
 
@@ -635,7 +656,8 @@ public class StringFormatDetector extends ResourceXmlDetector implements Detecto
                 if (!indices.contains(i)) {
                     Object clientData = handle.getClientData();
                     if (clientData instanceof Node) {
-                        if (context.getDriver().isSuppressed(ARG_COUNT, (Node) clientData)) {
+                        if (context.getDriver().isSuppressed(null, ARG_COUNT,
+                                (Node) clientData)) {
                             return;
                         }
                     }
@@ -649,9 +671,9 @@ public class StringFormatDetector extends ResourceXmlDetector implements Detecto
                     Collections.sort(sorted);
                     Location location = handle.resolve();
                     String message = String.format(
-                            "Formatting string '%1$s' is not referencing numbered arguments %2$s",
+                            "Formatting string '`%1$s`' is not referencing numbered arguments %2$s",
                             name, sorted);
-                    context.report(ARG_COUNT, location, message, null);
+                    context.report(ARG_COUNT, location, message);
                     break;
                 }
             }
@@ -661,7 +683,7 @@ public class StringFormatDetector extends ResourceXmlDetector implements Detecto
     }
 
     // See java.util.Formatter docs
-    private static final Pattern FORMAT = Pattern.compile(
+    public static final Pattern FORMAT = Pattern.compile(
             // Generic format:
             //   %[argument_index$][flags][width][.precision]conversion
             //
@@ -686,6 +708,7 @@ public class StringFormatDetector extends ResourceXmlDetector implements Detecto
 
     /** Given a format string returns the format type of the given argument */
     @VisibleForTesting
+    @Nullable
     static String getFormatArgumentType(String s, int argument) {
         Matcher matcher = FORMAT.matcher(s);
         int index = 0;
@@ -693,6 +716,11 @@ public class StringFormatDetector extends ResourceXmlDetector implements Detecto
         int nextNumber = 1;
         while (true) {
             if (matcher.find(index)) {
+                String value = matcher.group(6);
+                if ("%".equals(value) || "n".equals(value)) { //$NON-NLS-1$ //$NON-NLS-2$
+                    index = matcher.end();
+                    continue;
+                }
                 int matchStart = matcher.start();
                 // Make sure this is not an escaped '%'
                 for (; prevIndex < matchStart; prevIndex++) {
@@ -738,7 +766,7 @@ public class StringFormatDetector extends ResourceXmlDetector implements Detecto
      * observed arguments into it.
      */
     @VisibleForTesting
-    static int getFormatArgumentCount(String s, Set<Integer> seenArguments) {
+    static int getFormatArgumentCount(@NonNull String s, @Nullable Set<Integer> seenArguments) {
         Matcher matcher = FORMAT.matcher(s);
         int index = 0;
         int prevIndex = 0;
@@ -746,7 +774,8 @@ public class StringFormatDetector extends ResourceXmlDetector implements Detecto
         int max = 0;
         while (true) {
             if (matcher.find(index)) {
-                if ("%".equals(matcher.group(6))) { //$NON-NLS-1$
+                String value = matcher.group(6);
+                if ("%".equals(value) || "n".equals(value)) { //$NON-NLS-1$ //$NON-NLS-2$
                     index = matcher.end();
                     continue;
                 }
@@ -807,8 +836,7 @@ public class StringFormatDetector extends ResourceXmlDetector implements Detecto
             return false;
         }
 
-        String s = format;
-        Matcher matcher = FORMAT.matcher(s);
+        Matcher matcher = FORMAT.matcher(format);
         int index = 0;
         int prevIndex = 0;
         while (true) {
@@ -816,7 +844,7 @@ public class StringFormatDetector extends ResourceXmlDetector implements Detecto
                 int matchStart = matcher.start();
                 // Make sure this is not an escaped '%'
                 for (; prevIndex < matchStart; prevIndex++) {
-                    char c = s.charAt(prevIndex);
+                    char c = format.charAt(prevIndex);
                     if (c == '\\') {
                         prevIndex++;
                     }
@@ -861,7 +889,7 @@ public class StringFormatDetector extends ResourceXmlDetector implements Detecto
     @Override
     public void visitMethod(@NonNull JavaContext context, @Nullable AstVisitor visitor,
             @NonNull MethodInvocation node) {
-        if (mFormatStrings == null) {
+        if (mFormatStrings == null && !context.getClient().supportsProjectResources()) {
             return;
         }
 
@@ -927,16 +955,16 @@ public class StringFormatDetector extends ResourceXmlDetector implements Detecto
             Handle handle = mNotFormatStrings.get(name);
             Object clientData = handle.getClientData();
             if (clientData instanceof Node) {
-                if (context.getDriver().isSuppressed(INVALID, (Node) clientData)) {
+                if (context.getDriver().isSuppressed(null, INVALID, (Node) clientData)) {
                     return;
                 }
             }
             Location location = handle.resolve();
             String message = String.format(
-                    "Format string '%1$s' is not a valid format string so it should not be " +
-                    "passed to String.format",
+                    "Format string '`%1$s`' is not a valid format string so it should not be " +
+                    "passed to `String.format`",
                     name);
-            context.report(INVALID, call, location, message, null);
+            context.report(INVALID, call, location, message);
             return;
         }
 
@@ -945,15 +973,9 @@ public class StringFormatDetector extends ResourceXmlDetector implements Detecto
         Expression second = argIterator.hasNext() ? argIterator.next() : null;
 
         boolean specifiesLocale;
-        TypeReference parameterType;
-        lombok.ast.Node resolved = context.parser.resolve(context, first);
-        if (resolved != null) {
-            parameterType = context.parser.getType(context, resolved);
-        } else {
-            parameterType = context.parser.getType(context, first);
-        }
+        TypeDescriptor parameterType = context.getType(first);
         if (parameterType != null) {
-            specifiesLocale = parameterType.getTypeName().equals("java.util.Locale"); //$NON-NLS-1$
+            specifiesLocale = isLocaleReference(parameterType.getName());
         } else if (!call.astName().astValue().equals(FORMAT_METHOD)) {
             specifiesLocale = false;
         } else {
@@ -969,23 +991,97 @@ public class StringFormatDetector extends ResourceXmlDetector implements Detecto
                         && !(first instanceof StringLiteral));
         }
 
-        List<Pair<Handle, String>> list = mFormatStrings.get(name);
+        List<Pair<Handle, String>> list = mFormatStrings != null ? mFormatStrings.get(name) : null;
+        if (list == null) {
+            LintClient client = context.getClient();
+            if (client.supportsProjectResources() &&
+                    !context.getScope().contains(Scope.RESOURCE_FILE)) {
+                AbstractResourceRepository resources = client
+                        .getProjectResources(context.getMainProject(), true);
+                List<ResourceItem> items = resources
+                        .getResourceItem(ResourceType.STRING, name);
+                if (items != null) {
+                    for (final ResourceItem item : items) {
+                        ResourceValue v = item.getResourceValue(false);
+                        if (v != null) {
+                            String value = v.getRawXmlValue();
+                            if (value != null) {
+                                // Make sure it's really a formatting string,
+                                // not for example "Battery remaining: 90%"
+                                boolean isFormattingString = value.indexOf('%') != -1;
+                                for (int j = 0, m = value.length();
+                                        j < m && isFormattingString;
+                                        j++) {
+                                    char c = value.charAt(j);
+                                    if (c == '\\') {
+                                        j++;
+                                    } else if (c == '%') {
+                                        Matcher matcher = FORMAT.matcher(value);
+                                        if (!matcher.find(j)) {
+                                            isFormattingString = false;
+                                        } else {
+                                            String conversion = matcher.group(6);
+                                            int conversionClass = getConversionClass(
+                                                    conversion.charAt(0));
+                                            if (conversionClass == CONVERSION_CLASS_UNKNOWN
+                                                    || matcher.group(5) != null) {
+                                                // Some date format etc - don't process
+                                                return;
+                                            }
+                                        }
+                                        j++; // Don't process second % in a %%
+                                    }
+                                    // If the user marked the string with
+                                }
+
+                                if (isFormattingString) {
+                                    if (list == null) {
+                                        list = Lists.newArrayList();
+                                        if (mFormatStrings == null) {
+                                            mFormatStrings = Maps.newHashMap();
+                                        }
+                                        mFormatStrings.put(name, list);
+                                    }
+                                    Handle handle = client.createResourceItemHandle(item);
+                                    list.add(Pair.of(handle, value));
+                                }
+                            }
+                        }
+                    }
+                }
+            } else {
+                return;
+            }
+        }
+
         if (list != null) {
+            Set<String> reported = null;
             for (Pair<Handle, String> pair : list) {
                 String s = pair.getSecond();
+                if (reported != null && reported.contains(s)) {
+                    continue;
+                }
                 int count = getFormatArgumentCount(s, null);
                 Handle handle = pair.getFirst();
                 if (count != args.size() - 1 - (specifiesLocale ? 1 : 0)) {
-                    Location location = context.parser.getLocation(context, call);
+                    if (isSharedPreferenceGetString(context, call)) {
+                        continue;
+                    }
+
+                    Location location = context.getLocation(call);
                     Location secondary = handle.resolve();
                     secondary.setMessage(String.format("This definition requires %1$d arguments",
                             count));
                     location.setSecondary(secondary);
                     String message = String.format(
-                            "Wrong argument count, format string %1$s requires %2$d but format " +
-                            "call supplies %3$d",
+                            "Wrong argument count, format string `%1$s` requires `%2$d` but format " +
+                            "call supplies `%3$d`",
                             name, count, args.size() - 1 - (specifiesLocale ? 1 : 0));
-                    context.report(ARG_TYPES, method, location, message, null);
+                    context.report(ARG_TYPES, method, location, message);
+                    if (reported == null) {
+                        reported = Sets.newHashSet();
+                    }
+                    reported.add(s);
                 } else {
                     for (int i = 1; i <= count; i++) {
                         int argumentIndex = i + (specifiesLocale ? 1 : 0);
@@ -993,6 +1089,9 @@ public class StringFormatDetector extends ResourceXmlDetector implements Detecto
                         if (type != null) {
                             boolean valid = true;
                             String formatType = getFormatArgumentType(s, i);
+                            if (formatType == null) {
+                                continue;
+                            }
                             char last = formatType.charAt(formatType.length() - 1);
                             if (formatType.length() >= 2 &&
                                     Character.toLowerCase(
@@ -1023,7 +1122,11 @@ public class StringFormatDetector extends ResourceXmlDetector implements Detecto
                                 case 'a':
                                 case 'A':
                                     valid = type == Integer.TYPE
-                                            || type == Float.TYPE;
+                                            || type == Float.TYPE
+                                            || type == Double.TYPE
+                                            || type == Long.TYPE
+                                            || type == Byte.TYPE
+                                            || type == Short.TYPE;
                                     break;
                                 case 'c':
                                 case 'C':
@@ -1039,23 +1142,32 @@ public class StringFormatDetector extends ResourceXmlDetector implements Detecto
                                     // specific formatting. Use special issue
                                     // explanation for this?
                                     valid = type != Boolean.TYPE &&
-                                        !type.isAssignableFrom(Number.class);
+                                        !Number.class.isAssignableFrom(type);
                                     break;
                             }
 
                             if (!valid) {
-                                IJavaParser parser = context.parser;
+                                if (isSharedPreferenceGetString(context, call)) {
+                                    continue;
+                                }
+
                                 Expression argument = tracker.getArgument(argumentIndex);
-                                Location location = parser.getLocation(context, argument);
+                                Location location = context.getLocation(argument);
                                 Location secondary = handle.resolve();
                                 secondary.setMessage("Conflicting argument declaration here");
                                 location.setSecondary(secondary);
 
                                 String message = String.format(
                                         "Wrong argument type for formatting argument '#%1$d' " +
-                                        "in %2$s: conversion is '%3$s', received %4$s",
-                                        i, name, formatType, type.getSimpleName());
-                                context.report(ARG_TYPES, method, location, message, null);
+                                        "in `%2$s`: conversion is '`%3$s`', received `%4$s` " +
+                                        "(argument #%5$d in method call)",
+                                        i, name, formatType, type.getSimpleName(),
+                                        argumentIndex + 1);
+                                context.report(ARG_TYPES, method, location, message);
+                                if (reported == null) {
+                                    reported = Sets.newHashSet();
+                                }
+                                reported.add(s);
                             }
                         }
                     }
@@ -1064,9 +1176,34 @@ public class StringFormatDetector extends ResourceXmlDetector implements Detecto
         }
     }
 
+    private static boolean isSharedPreferenceGetString(@NonNull JavaContext context,
+            @NonNull MethodInvocation call) {
+        if (!GET_STRING_METHOD.equals(call.astName().astValue())) {
+            return false;
+        }
+
+        JavaParser.ResolvedNode resolved = context.resolve(call);
+        if (resolved instanceof JavaParser.ResolvedMethod) {
+            JavaParser.ResolvedMethod resolvedMethod = (JavaParser.ResolvedMethod) resolved;
+            JavaParser.ResolvedClass containingClass = resolvedMethod.getContainingClass();
+            return containingClass.isSubclassOf(ANDROID_CONTENT_SHARED_PREFERENCES, false);
+        }
+
+        return false; // not certain
+    }
+
+    private static boolean isLocaleReference(@Nullable TypeDescriptor reference) {
+        return reference != null && isLocaleReference(reference.getName());
+    }
+
+    private static boolean isLocaleReference(@Nullable String typeName) {
+        return typeName != null && (typeName.equals("Locale")            //$NON-NLS-1$
+                || typeName.equals("java.util.Locale"));                 //$NON-NLS-1$
+    }
+
     /** Returns the parent method of the given AST node */
     @Nullable
-    static lombok.ast.Node getParentMethod(@NonNull lombok.ast.Node node) {
+    public static lombok.ast.Node getParentMethod(@NonNull lombok.ast.Node node) {
         lombok.ast.Node current = node.getParent();
         while (current != null
                 && !(current instanceof MethodDeclaration)
@@ -1078,23 +1215,28 @@ public class StringFormatDetector extends ResourceXmlDetector implements Detecto
     }
 
     /** Returns the resource name corresponding to the first argument in the given call */
-    static String getResourceForFirstArg(lombok.ast.Node method, lombok.ast.Node call) {
+    @Nullable
+    public static String getResourceForFirstArg(
+            @NonNull lombok.ast.Node method,
+            @NonNull lombok.ast.Node call) {
         assert call instanceof MethodInvocation || call instanceof ConstructorInvocation;
         StringTracker tracker = new StringTracker(null, method, call, 0);
         method.accept(tracker);
-        String name = tracker.getFormatStringName();
 
-        return name;
+        return tracker.getFormatStringName();
     }
 
     /** Returns the resource name corresponding to the given argument in the given call */
-    static String getResourceArg(lombok.ast.Node method, lombok.ast.Node call, int argIndex) {
+    @Nullable
+    public static String getResourceArg(
+            @NonNull lombok.ast.Node method,
+            @NonNull lombok.ast.Node call,
+            int argIndex) {
         assert call instanceof MethodInvocation || call instanceof ConstructorInvocation;
         StringTracker tracker = new StringTracker(null, method, call, argIndex);
         method.accept(tracker);
-        String name = tracker.getFormatStringName();
 
-        return name;
+        return tracker.getFormatStringName();
     }
 
     /**
@@ -1170,32 +1312,66 @@ public class StringFormatDetector extends ResourceXmlDetector implements Detecto
                 // If the AST supports type resolution, use that for other types
                 // of expressions
                 if (mContext != null) {
-                    TypeReference parameterType;
-                    lombok.ast.Node resolved = mContext.parser.resolve(mContext, arg);
-                    if (resolved != null) {
-                        parameterType = mContext.parser.getType(mContext, resolved);
-                    } else {
-                        parameterType = mContext.parser.getType(mContext, arg);
-                    }
-                    if (parameterType != null) {
-                        String fqcn = parameterType.getTypeName();
-                        if (fqcn.equals("java.lang.String")   //$NON-NLS-1$
-                                || fqcn.equals("String")) {   //$NON-NLS-1$
-                            return String.class;
-                        } else if (fqcn.equals("int")) {      //$NON-NLS-1$
-                            return Integer.TYPE;
-                        } else if (fqcn.equals("null")) {     //$NON-NLS-1$
-                            return Object.class;
-                        } else if (fqcn.equals("float")) {    //$NON-NLS-1$
-                            return Float.TYPE;
-                        } else if (fqcn.equals("char")) {     //$NON-NLS-1$
-                            return Character.TYPE;
-                        }
-                    }
+                    return getTypeClass(mContext.getType(arg));
                 }
             }
 
             return null;
+        }
+
+        private static Class<?> getTypeClass(@Nullable TypeDescriptor type) {
+            if (type != null) {
+                return getTypeClass(type.getName());
+            }
+            return null;
+        }
+
+        private static Class<?> getTypeClass(@Nullable String fqcn) {
+            if (fqcn == null) {
+                return null;
+            } else if (fqcn.equals(TYPE_STRING) || fqcn.equals("String")) {   //$NON-NLS-1$
+                return String.class;
+            } else if (fqcn.equals(TYPE_INT)) {
+                return Integer.TYPE;
+            } else if (fqcn.equals(TYPE_BOOLEAN)) {
+                return Boolean.TYPE;
+            } else if (fqcn.equals(TYPE_NULL)) {
+                return Object.class;
+            } else if (fqcn.equals(TYPE_LONG)) {
+                return Long.TYPE;
+            } else if (fqcn.equals(TYPE_FLOAT)) {
+                return Float.TYPE;
+            } else if (fqcn.equals(TYPE_DOUBLE)) {
+                return Double.TYPE;
+            } else if (fqcn.equals(TYPE_CHAR)) {
+                return Character.TYPE;
+            } else if (fqcn.equals("BigDecimal")                //$NON-NLS-1$
+                    || fqcn.equals("java.math.BigDecimal")) {   //$NON-NLS-1$
+                return Float.TYPE;
+            } else if (fqcn.equals("BigInteger")                //$NON-NLS-1$
+                    || fqcn.equals("java.math.BigInteger")) {   //$NON-NLS-1$
+                return Integer.TYPE;
+            } else if (fqcn.equals(TYPE_OBJECT)) {
+              return null;
+            } else if (fqcn.startsWith("java.lang.")) {
+              if (fqcn.equals("java.lang.Integer")
+                  || fqcn.equals("java.lang.Short")
+                  || fqcn.equals("java.lang.Byte")
+                  || fqcn.equals("java.lang.Long")) {
+                return Integer.TYPE;
+              } else if (fqcn.equals("java.lang.Float")
+                || fqcn.equals("java.lang.Double")) {
+                return Float.TYPE;
+              } else {
+                return null;
+              }
+            } else if (fqcn.equals(TYPE_BYTE)) {
+              return Byte.TYPE;
+            } else if (fqcn.equals(TYPE_SHORT)) {
+                return Short.TYPE;
+            } else {
+                return null;
+            }
         }
 
         public Expression getArgument(int argument) {
@@ -1222,11 +1398,8 @@ public class StringFormatDetector extends ResourceXmlDetector implements Detecto
 
         @Override
         public boolean visitNode(lombok.ast.Node node) {
-            if (mDone) {
-                return true;
-            }
+            return mDone || super.visitNode(node);
 
-            return super.visitNode(node);
         }
 
         @Override
@@ -1273,7 +1446,17 @@ public class StringFormatDetector extends ResourceXmlDetector implements Detecto
                 i++;
             }
             if (iterator.hasNext()) {
-                return iterator.next();
+                Expression next = iterator.next();
+                if (next != null && mContext != null && iterator.hasNext()) {
+                    TypeDescriptor type = mContext.getType(next);
+                    if (isLocaleReference(type)) {
+                        next = iterator.next();
+                    } else if (type == null
+                            && next.toString().startsWith("Locale.")) { //$NON-NLS-1$
+                        next = iterator.next();
+                    }
+                }
+                return next;
             }
 
             return null;
@@ -1339,10 +1522,14 @@ public class StringFormatDetector extends ResourceXmlDetector implements Detecto
             if (expression == null) {
               return null;
             }
+
             if (expression instanceof VariableReference) {
                 VariableReference reference = (VariableReference) expression;
                 String variable = reference.astIdentifier().astValue();
-                return mTypes.get(variable);
+                Class<?> type = mTypes.get(variable);
+                if (type != null) {
+                    return type;
+                }
             } else if (expression instanceof MethodInvocation) {
                 MethodInvocation method = (MethodInvocation) expression;
                 String methodName = method.astName().astValue();
@@ -1357,8 +1544,22 @@ public class StringFormatDetector extends ResourceXmlDetector implements Detecto
                 return Float.TYPE;
             } else if (expression instanceof CharLiteral) {
                 return Character.TYPE;
+            } else if (expression instanceof BooleanLiteral) {
+                return Boolean.TYPE;
             } else if (expression instanceof NullLiteral) {
                 return Object.class;
+            }
+
+            if (mContext != null) {
+                TypeDescriptor type = mContext.getType(expression);
+                if (type != null) {
+                    Class<?> typeClass = getTypeClass(type);
+                    if (typeClass != null) {
+                        return typeClass;
+                    } else {
+                        return Object.class;
+                    }
+                }
             }
 
             return null;

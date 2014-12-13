@@ -22,6 +22,10 @@ import static com.android.SdkConstants.DOT_XML;
 import com.android.annotations.NonNull;
 import com.android.annotations.Nullable;
 import com.android.annotations.VisibleForTesting;
+import com.android.sdklib.repository.FullRevision;
+import com.android.sdklib.repository.descriptors.PkgType;
+import com.android.sdklib.repository.local.LocalPkgInfo;
+import com.android.sdklib.repository.local.LocalSdk;
 import com.android.tools.lint.client.api.LintClient;
 import com.android.tools.lint.detector.api.LintUtils;
 import com.google.common.base.Charsets;
@@ -84,9 +88,6 @@ public class ApiLookup {
     /** Default size to reserve for each API entry when creating byte buffer to build up data */
     private static final int BYTES_PER_ENTRY = 36;
 
-    private final LintClient mClient;
-    private final File mXmlFile;
-    private final File mBinaryFile;
     private final Api mInfo;
     private byte[] mData;
     private int[] mIndices;
@@ -107,7 +108,8 @@ public class ApiLookup {
      * @return a (possibly shared) instance of the API database, or null
      *         if its data can't be found
      */
-    public static ApiLookup get(LintClient client) {
+    @Nullable
+    public static ApiLookup get(@NonNull LintClient client) {
         synchronized (ApiLookup.class) {
             ApiLookup db = sInstance.get();
             if (db == null) {
@@ -122,7 +124,6 @@ public class ApiLookup {
                 }
 
                 if (file == null || !file.exists()) {
-                    client.log(null, "Fatal error: No API database found at %1$s", file);
                     return null;
                 } else {
                     db = get(client, file);
@@ -135,14 +136,42 @@ public class ApiLookup {
     }
 
     @VisibleForTesting
-    static String getCacheFileName(String xmlFileName) {
+    @Nullable
+    static String getPlatformVersion(@NonNull LintClient client) {
+        LocalSdk sdk = client.getSdk();
+        if (sdk != null) {
+            LocalPkgInfo pkgInfo = sdk.getPkgInfo(PkgType.PKG_PLATFORM_TOOLS);
+            if (pkgInfo != null) {
+                FullRevision version = pkgInfo.getDesc().getFullRevision();
+                if (version != null) {
+                    return version.toShortString();
+                }
+            }
+        }
+
+        return null;
+    }
+
+    @VisibleForTesting
+    @NonNull
+    static String getCacheFileName(@NonNull String xmlFileName, @Nullable String platformVersion) {
         if (LintUtils.endsWith(xmlFileName, DOT_XML)) {
             xmlFileName = xmlFileName.substring(0, xmlFileName.length() - DOT_XML.length());
         }
 
+        StringBuilder sb = new StringBuilder(100);
+        sb.append(xmlFileName);
+
         // Incorporate version number in the filename to avoid upgrade filename
         // conflicts on Windows (such as issue #26663)
-        return xmlFileName + '-' + BINARY_FORMAT_VERSION + ".bin"; //$NON-NLS-1$
+        sb.append('-').append(BINARY_FORMAT_VERSION);
+
+        if (platformVersion != null) {
+            sb.append('-').append(platformVersion);
+        }
+
+        sb.append(".bin"); //$NON-NLS-1$
+        return sb.toString();
     }
 
     /**
@@ -166,7 +195,8 @@ public class ApiLookup {
             cacheDir = xmlFile.getParentFile();
         }
 
-        File binaryData = new File(cacheDir, getCacheFileName(xmlFile.getName()));
+        String platformVersion = getPlatformVersion(client);
+        File binaryData = new File(cacheDir, getCacheFileName(xmlFile.getName(), platformVersion));
 
         if (DEBUG_FORCE_REGENERATE_BINARY) {
             System.err.println("\nTemporarily regenerating binary data unconditionally \nfrom "
@@ -220,13 +250,10 @@ public class ApiLookup {
             @NonNull File xmlFile,
             @Nullable File binaryFile,
             @Nullable Api info) {
-        mClient = client;
-        mXmlFile = xmlFile;
-        mBinaryFile = binaryFile;
         mInfo = info;
 
         if (binaryFile != null) {
-            readData();
+            readData(client, xmlFile, binaryFile);
         }
     }
 
@@ -263,14 +290,15 @@ public class ApiLookup {
      * in readData().
      * </pre>
      */
-    private void readData() {
-        if (!mBinaryFile.exists()) {
-            mClient.log(null, "%1$s does not exist", mBinaryFile);
+    private void readData(@NonNull LintClient client, @NonNull File xmlFile,
+            @NonNull File binaryFile) {
+        if (!binaryFile.exists()) {
+            client.log(null, "%1$s does not exist", binaryFile);
             return;
         }
         long start = System.currentTimeMillis();
         try {
-            MappedByteBuffer buffer = Files.map(mBinaryFile, MapMode.READ_ONLY);
+            MappedByteBuffer buffer = Files.map(binaryFile, MapMode.READ_ONLY);
             assert buffer.order() == ByteOrder.BIG_ENDIAN;
 
             // First skip the header
@@ -278,7 +306,7 @@ public class ApiLookup {
             buffer.rewind();
             for (int offset = 0; offset < expectedHeader.length; offset++) {
                 if (expectedHeader[offset] != buffer.get()) {
-                    mClient.log(null, "Incorrect file header: not an API database cache " +
+                    client.log(null, "Incorrect file header: not an API database cache " +
                             "file, or a corrupt cache file");
                     return;
                 }
@@ -287,8 +315,8 @@ public class ApiLookup {
             // Read in the format number
             if (buffer.get() != BINARY_FORMAT_VERSION) {
                 // Force regeneration of new binary data with up to date format
-                if (createCache(mClient, mXmlFile, mBinaryFile)) {
-                    readData(); // Recurse
+                if (createCache(client, xmlFile, binaryFile)) {
+                    readData(client, xmlFile, binaryFile); // Recurse
                 }
 
                 return;
@@ -332,10 +360,10 @@ public class ApiLookup {
             // TODO: Investigate (profile) accessing the byte buffer directly instead of
             // accessing a byte array.
         } catch (Throwable e) {
-            mClient.log(null, "Failure reading binary cache file %1$s", mBinaryFile.getPath());
-            mClient.log(null, "Please delete the file and restart the IDE/lint: %1$s",
-                    mBinaryFile.getPath());
-            mClient.log(e, null);
+            client.log(null, "Failure reading binary cache file %1$s", binaryFile.getPath());
+            client.log(null, "Please delete the file and restart the IDE/lint: %1$s",
+                    binaryFile.getPath());
+            client.log(e, null);
         }
         if (WRITE_STATS) {
             long end = System.currentTimeMillis();
@@ -346,7 +374,7 @@ public class ApiLookup {
         }
     }
 
-    /** See the {@link #readData()} for documentation on the data format. */
+    /** See the {@link #readData(LintClient,File,File)} for documentation on the data format. */
     private static void writeDatabase(File file, Api info) throws IOException {
         /*
          * 1. A file header, which is the exact contents of {@link FILE_HEADER} encoded

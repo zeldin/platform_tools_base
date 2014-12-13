@@ -30,11 +30,15 @@ import static com.android.SdkConstants.NEW_ID_PREFIX;
 
 import com.android.annotations.NonNull;
 import com.android.annotations.VisibleForTesting;
+import com.android.ide.common.rendering.api.ResourceValue;
+import com.android.tools.lint.client.api.LintClient;
 import com.android.tools.lint.detector.api.Category;
 import com.android.tools.lint.detector.api.Implementation;
 import com.android.tools.lint.detector.api.Issue;
 import com.android.tools.lint.detector.api.LayoutDetector;
+import com.android.tools.lint.detector.api.LintUtils;
 import com.android.tools.lint.detector.api.Location;
+import com.android.tools.lint.detector.api.Project;
 import com.android.tools.lint.detector.api.Scope;
 import com.android.tools.lint.detector.api.Severity;
 import com.android.tools.lint.detector.api.Speed;
@@ -42,9 +46,11 @@ import com.android.tools.lint.detector.api.XmlContext;
 
 import org.w3c.dom.Attr;
 import org.w3c.dom.Element;
+import org.w3c.dom.Node;
 
 import java.util.Collection;
 import java.util.Collections;
+import java.util.List;
 
 /**
  * Checks for usability problems in text fields: omitting inputType, or omitting a hint.
@@ -54,7 +60,6 @@ public class TextFieldDetector extends LayoutDetector {
     public static final Issue ISSUE = Issue.create(
             "TextFields", //$NON-NLS-1$
             "Missing `inputType` or `hint`",
-            "Looks for text fields missing `inputType` or `hint` settings",
 
             "Providing an `inputType` attribute on a text field improves usability " +
             "because depending on the data to be input, optimized keyboards can be shown " +
@@ -94,19 +99,45 @@ public class TextFieldDetector extends LayoutDetector {
 
     @Override
     public void visitElement(@NonNull XmlContext context, @NonNull Element element) {
-        String style = element.getAttribute(ATTR_STYLE);
-        if (style != null && !style.isEmpty()) {
-            // The input type might be specified via a style. This will require
-            // us to track these (similar to what is done for the
-            // RequiredAttributeDetector to track layout_width and layout_height
-            // in style declarations). For now, simply ignore these elements
-            // to avoid producing false positives.
-            return;
+        Node inputTypeNode = element.getAttributeNodeNS(ANDROID_URI, ATTR_INPUT_TYPE);
+        String inputType = "";
+        if (inputTypeNode != null) {
+            inputType = inputTypeNode.getNodeValue();
         }
 
-        Attr inputTypeNode = element.getAttributeNodeNS(ANDROID_URI, ATTR_INPUT_TYPE);
-        if (inputTypeNode == null &&
-                !element.hasAttributeNS(ANDROID_URI, ATTR_HINT)) {
+        boolean haveHint = false;
+        if (inputTypeNode == null) {
+            haveHint = element.hasAttributeNS(ANDROID_URI, ATTR_HINT);
+            String style = element.getAttribute(ATTR_STYLE);
+            if (style != null && !style.isEmpty()) {
+                LintClient client = context.getClient();
+                if (client.supportsProjectResources()) {
+                    Project project = context.getMainProject();
+                    List<ResourceValue> styles = LintUtils.getStyleAttributes(project, client,
+                            style, ANDROID_URI, ATTR_INPUT_TYPE);
+                    if (styles != null && !styles.isEmpty()) {
+                        ResourceValue value = styles.get(0);
+                        inputType = value.getValue();
+                        inputTypeNode = element;
+                    } else if (!haveHint) {
+                        styles = LintUtils.getStyleAttributes(project, client, style,
+                                ANDROID_URI, ATTR_HINT);
+                        if (styles != null && !styles.isEmpty()) {
+                            haveHint = true;
+                        }
+                    }
+                } else {
+                    // The input type might be specified via a style. This will require
+                    // us to track these (similar to what is done for the
+                    // RequiredAttributeDetector to track layout_width and layout_height
+                    // in style declarations). For now, simply ignore these elements
+                    // to avoid producing false positives.
+                    return;
+                }
+            }
+        }
+
+        if (inputTypeNode == null && !haveHint) {
             // Also make sure the EditText does not set an inputMethod in which case
             // an inputType might be provided from the input.
             if (element.hasAttributeNS(ANDROID_URI, ATTR_INPUT_METHOD)) {
@@ -114,7 +145,7 @@ public class TextFieldDetector extends LayoutDetector {
             }
 
             context.report(ISSUE, element, context.getLocation(element),
-                    "This text field does not specify an inputType or a hint", null);
+                    "This text field does not specify an `inputType` or a `hint`");
         }
 
         Attr idNode = element.getAttributeNodeNS(ANDROID_URI, ATTR_ID);
@@ -130,11 +161,6 @@ public class TextFieldDetector extends LayoutDetector {
             return;
         }
 
-        String inputType = "";
-        if (inputTypeNode != null) {
-            inputType = inputTypeNode.getValue();
-        }
-
         // TODO: See if the name is just the default names (button1, editText1 etc)
         // and if so, do nothing
         // TODO: Unit test this
@@ -142,8 +168,8 @@ public class TextFieldDetector extends LayoutDetector {
         if (containsWord(id, "phone", true, true)) {                 //$NON-NLS-1$
             if (!inputType.contains("phone")                         //$NON-NLS-1$
                     && element.getAttributeNodeNS(ANDROID_URI, ATTR_PHONE_NUMBER) == null) {
-                String message = String.format("The view name (%1$s) suggests this is a phone "
-                        + "number, but it does not include 'phone' in the inputType", id);
+                String message = String.format("The view name (`%1$s`) suggests this is a phone "
+                        + "number, but it does not include '`phone`' in the `inputType`", id);
                 reportMismatch(context, idNode, inputTypeNode, message);
             }
             return;
@@ -156,8 +182,8 @@ public class TextFieldDetector extends LayoutDetector {
                 || containsWord(id, "weight", false, true)
                 || containsWord(id, "number", false, true)) {
             if (!inputType.contains("number") && !inputType.contains("phone")) { //$NON-NLS-1$
-                String message = String.format("The view name (%1$s) suggests this is a number, "
-                        + "but it does not include a numeric inputType (such as 'numberSigned')",
+                String message = String.format("The view name (`%1$s`) suggests this is a number, "
+                        + "but it does not include a numeric `inputType` (such as '`numberSigned`')",
                         id);
                 reportMismatch(context, idNode, inputTypeNode, message);
             }
@@ -167,8 +193,8 @@ public class TextFieldDetector extends LayoutDetector {
         if (containsWord(id, "password", true, true)) {   //$NON-NLS-1$
             if (!(inputType.contains("Password"))  //$NON-NLS-1$
                 && element.getAttributeNodeNS(ANDROID_URI, ATTR_PASSWORD) == null) {
-                String message = String.format("The view name (%1$s) suggests this is a password, "
-                        + "but it does not include 'textPassword' in the inputType", id);
+                String message = String.format("The view name (`%1$s`) suggests this is a password, "
+                        + "but it does not include '`textPassword`' in the `inputType`", id);
                 reportMismatch(context, idNode, inputTypeNode, message);
             }
             return;
@@ -176,8 +202,8 @@ public class TextFieldDetector extends LayoutDetector {
 
         if (containsWord(id, "email", true, true)) {                   //$NON-NLS-1$
             if (!inputType.contains("Email")) { //$NON-NLS-1$
-                String message = String.format("The view name (%1$s) suggests this is an e-mail "
-                        + "address, but it does not include 'textEmail' in the inputType", id);
+                String message = String.format("The view name (`%1$s`) suggests this is an e-mail "
+                        + "address, but it does not include '`textEmail`' in the `inputType`", id);
                 reportMismatch(context, idNode, inputTypeNode, message);
             }
             return;
@@ -186,8 +212,8 @@ public class TextFieldDetector extends LayoutDetector {
         if (endsWith(id, "pin", false, true)) {    //$NON-NLS-1$
             if (!(inputType.contains("numberPassword"))  //$NON-NLS-1$
                 && element.getAttributeNodeNS(ANDROID_URI, ATTR_PASSWORD) == null) {
-                String message = String.format("The view name (%1$s) suggests this is a password, "
-                        + "but it does not include 'numberPassword' in the inputType", id);
+                String message = String.format("The view name (`%1$s`) suggests this is a password, "
+                        + "but it does not include '`numberPassword`' in the `inputType`", id);
                 reportMismatch(context, idNode, inputTypeNode, message);
             }
             return;
@@ -195,20 +221,20 @@ public class TextFieldDetector extends LayoutDetector {
 
         if ((containsWord(id, "uri") || containsWord(id, "url"))
                 && !inputType.contains("textUri")) {
-            String message = String.format("The view name (%1$s) suggests this is a URI, "
-                    + "but it does not include 'textUri' in the inputType", id);
+            String message = String.format("The view name (`%1$s`) suggests this is a URI, "
+                    + "but it does not include '`textUri`' in the `inputType`", id);
             reportMismatch(context, idNode, inputTypeNode, message);
         }
 
         if ((containsWord(id, "date"))            //$NON-NLS-1$
                 && !inputType.contains("date")) { //$NON-NLS-1$
-            String message = String.format("The view name (%1$s) suggests this is a date, "
-                    + "but it does not include 'date' or 'datetime' in the inputType", id);
+            String message = String.format("The view name (`%1$s`) suggests this is a date, "
+                    + "but it does not include '`date`' or '`datetime`' in the `inputType`", id);
             reportMismatch(context, idNode, inputTypeNode, message);
         }
     }
 
-    private static void reportMismatch(XmlContext context, Attr idNode, Attr inputTypeNode,
+    private static void reportMismatch(XmlContext context, Attr idNode, Node inputTypeNode,
             String message) {
         Location location;
         if (inputTypeNode != null) {
@@ -219,7 +245,7 @@ public class TextFieldDetector extends LayoutDetector {
         } else {
             location = context.getLocation(idNode);
         }
-        context.report(ISSUE, idNode.getOwnerElement(), location, message, null);
+        context.report(ISSUE, idNode.getOwnerElement(), location, message);
     }
 
     /** Returns true if the given sentence contains a given word */

@@ -42,13 +42,12 @@ public class PrivateKeyDetector extends Detector implements Detector.OtherFileSc
     public static final Issue ISSUE = Issue.create(
             "PackagedPrivateKey", //$NON-NLS-1$
             "Packaged private key",
-            "Looks for packaged private key files",
 
             "In general, you should not package private key files inside your app.",
 
             Category.SECURITY,
             8,
-            Severity.WARNING,
+            Severity.FATAL,
             new Implementation(PrivateKeyDetector.class, Scope.OTHER_SCOPE));
 
     /** Constructs a new {@link PrivateKeyDetector} check */
@@ -94,9 +93,9 @@ public class PrivateKeyDetector extends Detector implements Detector.OtherFileSc
             String fileName = file.getParentFile().getName() + File.separator
                 + file.getName();
             String message = String.format(
-                "The %1$s file seems to be a private key file. " +
+                "The `%1$s` file seems to be a private key file. " +
                 "Please make sure not to embed this in your APK file.", fileName);
-            context.report(ISSUE, Location.create(file), message, null);
+            context.report(ISSUE, Location.create(file), message);
         }
     }
 

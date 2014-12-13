@@ -16,8 +16,6 @@
 
 package com.android.sdklib.internal.repository.packages;
 
-import com.android.sdklib.internal.repository.archives.Archive.Arch;
-import com.android.sdklib.internal.repository.archives.Archive.Os;
 import com.android.sdklib.repository.PkgProps;
 
 import java.util.Properties;
@@ -26,7 +24,7 @@ public class ExtraPackageTest_Base extends PackageTest {
 
     @Override
     public void testCreate() {
-        Properties props = createProps();
+        Properties props = createExpectedProps();
 
         MockExtraPackage p = new MockExtraPackage(
                 null, //source
@@ -37,8 +35,6 @@ public class ExtraPackageTest_Base extends PackageTest {
                 null, //license
                 null, //description
                 null, //descUrl
-                Os.ANY, //archiveOs
-                Arch.ANY, //archiveArch
                 LOCAL_ARCHIVE_PATH
                 );
 
@@ -47,31 +43,29 @@ public class ExtraPackageTest_Base extends PackageTest {
 
     @Override
     public void testSaveProperties() {
-        Properties props = createProps();
+        Properties expected = createExpectedProps();
 
         MockExtraPackage p = new MockExtraPackage(
                 null, //source
-                props,
+                expected,
                 "vendor",
                 "the_path",
                 -1, //revision
                 null, //license
                 null, //description
                 null, //descUrl
-                Os.ANY, //archiveOs
-                Arch.ANY, //archiveArch
                 LOCAL_ARCHIVE_PATH
                 );
 
-        Properties props2 = new Properties();
-        p.saveProperties(props2);
+        Properties actual = new Properties();
+        p.saveProperties(actual);
 
-        assertEquals(props2, props);
+        assertEquals(expected, actual);
     }
 
     @Override
-    protected Properties createProps() {
-        Properties props = super.createProps();
+    protected Properties createExpectedProps() {
+        Properties props = super.createExpectedProps();
 
         props.setProperty(PkgProps.EXTRA_VENDOR_ID,      "vendor");
         props.setProperty(PkgProps.EXTRA_VENDOR_DISPLAY, "vendor");

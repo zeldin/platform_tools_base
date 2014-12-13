@@ -19,10 +19,13 @@ package com.android.tools.perflib.vmtrace.viz;
 import static junit.framework.Assert.assertNotNull;
 import static junit.framework.Assert.fail;
 
-import com.android.tools.perflib.vmtrace.Call;
+import com.android.tools.perflib.vmtrace.ClockType;
+import com.android.tools.perflib.vmtrace.SearchResult;
+import com.android.tools.perflib.vmtrace.ThreadInfo;
 import com.android.tools.perflib.vmtrace.VmTraceData;
 import com.android.tools.perflib.vmtrace.VmTraceParser;
-import com.android.utils.SparseArray;
+import com.google.common.base.Predicate;
+import com.google.common.collect.Iterables;
 
 import java.awt.*;
 import java.awt.event.ActionEvent;
@@ -30,9 +33,13 @@ import java.awt.event.ActionListener;
 import java.io.File;
 import java.io.IOException;
 import java.net.URL;
-import java.util.*;
+import java.util.List;
 
 import javax.swing.*;
+import javax.swing.event.DocumentEvent;
+import javax.swing.event.DocumentListener;
+import javax.swing.text.BadLocationException;
+import javax.swing.text.Document;
 
 /**
  * This is just a simple test application that loads a particular trace file,
@@ -60,7 +67,7 @@ public class TraceView {
         frame.add(traceViewPanel, BorderLayout.CENTER);
         frame.setDefaultCloseOperation(WindowConstants.DISPOSE_ON_CLOSE);
         frame.pack();
-        frame.setSize(800, 600);
+        frame.setSize(1200, 800);
         frame.setVisible(true);
 
         traceViewPanel.setTrace(traceData);
@@ -87,8 +94,14 @@ public class TraceView {
     }
 
     public static class TraceViewPanel extends JPanel {
+        private VmTraceData mTraceData;
+
         private final TraceViewCanvas mTraceViewCanvas;
         private JComboBox mThreadCombo;
+        private JCheckBox mClockSelector;
+        private JCheckBox mUseInclusiveTimeForColor;
+        private JTextField mSearchField;
+        private JLabel mSearchResults;
 
         public TraceViewPanel() {
             setLayout(new BorderLayout());
@@ -100,38 +113,125 @@ public class TraceView {
         }
 
         private JPanel createControlPanel() {
-            JPanel p = new JPanel();
+            JPanel p = new JPanel(new FlowLayout(FlowLayout.LEFT));
 
             JLabel l = new JLabel("Thread: ");
             p.add(l);
 
             mThreadCombo = new JComboBox();
-            mThreadCombo.addActionListener(new ActionListener() {
+            p.add(mThreadCombo);
+            mThreadCombo.setRenderer(new DefaultListCellRenderer() {
+                @Override
+                public Component getListCellRendererComponent(JList list, Object value, int index,
+                        boolean isSelected, boolean cellHasFocus) {
+                    Object v = value instanceof ThreadInfo ? ((ThreadInfo) value).getName() : value;
+                    return super.getListCellRendererComponent(list, v, index, isSelected,
+                            cellHasFocus);
+                }
+            });
+
+            mClockSelector = new JCheckBox("Use Wallclock Time");
+            mClockSelector.setSelected(true);
+            p.add(mClockSelector);
+
+            mUseInclusiveTimeForColor = new JCheckBox("Color by inclusive time");
+            p.add(mUseInclusiveTimeForColor);
+
+            ActionListener listener = new ActionListener() {
                 @Override
                 public void actionPerformed(ActionEvent e) {
                     assert mTraceViewCanvas != null;
-                    mTraceViewCanvas.displayThread((String)mThreadCombo.getSelectedItem());
+
+                    if (e.getSource() == mThreadCombo) {
+                        mTraceViewCanvas.displayThread((ThreadInfo) mThreadCombo.getSelectedItem());
+                    } else if (e.getSource() == mClockSelector) {
+                        mTraceViewCanvas.setRenderClock(mClockSelector.isSelected() ?
+                                ClockType.GLOBAL : ClockType.THREAD);
+                    } else if (e.getSource() == mUseInclusiveTimeForColor) {
+                        mTraceViewCanvas.setUseInclusiveTimeForColorAssignment(
+                                mUseInclusiveTimeForColor.isSelected());
+                    }
+                }
+            };
+            mThreadCombo.addActionListener(listener);
+            mClockSelector.addActionListener(listener);
+            mUseInclusiveTimeForColor.addActionListener(listener);
+
+            l = new JLabel("Find: ");
+            p.add(l);
+
+            mSearchField = new JTextField(20);
+            p.add(mSearchField);
+            mSearchField.setEnabled(false);
+            mSearchField.getDocument().addDocumentListener(new DocumentListener() {
+                @Override
+                public void insertUpdate(DocumentEvent e) {
+                    searchTextUpdated();
+                }
+
+                @Override
+                public void removeUpdate(DocumentEvent e) {
+                    searchTextUpdated();
+                }
+
+                @Override
+                public void changedUpdate(DocumentEvent e) {
+                    searchTextUpdated();
+                }
+
+                private void searchTextUpdated() {
+                    if (mTraceData == null) {
+                        return;
+                    }
+
+                    String pattern = getText(mSearchField.getDocument());
+                    if (pattern.length() < 3) {
+                        mTraceViewCanvas.setHighlightMethods(null);
+                        mSearchResults.setText("");
+                        return;
+                    }
+
+                    ThreadInfo thread = (ThreadInfo) mThreadCombo.getSelectedItem();
+                    SearchResult results = mTraceData.searchFor(pattern, thread);
+                    mTraceViewCanvas.setHighlightMethods(results.getMethods());
+
+                    String result = String.format("%1$d methods, %2$d instances",
+                            results.getMethods().size(), results.getInstances().size());
+                    mSearchResults.setText(result);
+                }
+
+                private String getText(Document document) {
+                    try {
+                        return document.getText(0, document.getLength());
+                    } catch (BadLocationException e) {
+                        return "";
+                    }
                 }
             });
-            p.add(mThreadCombo);
+
+            mSearchResults = new JLabel();
+            p.add(mSearchResults);
 
             return p;
         }
 
         public void setTrace(VmTraceData traceData) {
-            SparseArray<String> threads = traceData.getThreads();
-            java.util.List<String> threadNames = new ArrayList<String>(threads.size());
-            for (int i = 0; i < threads.size(); i++) {
-                Call topLevelCall = traceData.getTopLevelCall(threads.keyAt(i));
-                if (topLevelCall != null) {
-                    threadNames.add(threads.valueAt(i));
+            mTraceData = traceData;
+
+            List<ThreadInfo> threads = traceData.getThreads(true);
+            ThreadInfo defaultThread = Iterables.find(threads, new Predicate<ThreadInfo>() {
+                @Override
+                public boolean apply(ThreadInfo input) {
+                    return DEFAULT_THREAD_NAME.equals(input.getName());
                 }
-            }
+            }, threads.get(0));
 
-            mThreadCombo.setModel(new DefaultComboBoxModel(threadNames.toArray()));
+            mThreadCombo.setModel(new DefaultComboBoxModel(threads.toArray()));
             mThreadCombo.setEnabled(true);
+            mSearchField.setEnabled(true);
 
-            mTraceViewCanvas.setTrace(traceData, DEFAULT_THREAD_NAME);
+            mTraceViewCanvas.setTrace(traceData, defaultThread, ClockType.GLOBAL);
+            mThreadCombo.setSelectedItem(defaultThread);
         }
     }
 }

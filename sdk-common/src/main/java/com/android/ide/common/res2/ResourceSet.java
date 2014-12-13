@@ -20,7 +20,8 @@ import static com.android.ide.common.res2.ResourceFile.ATTR_QUALIFIER;
 
 import com.android.SdkConstants;
 import com.android.annotations.NonNull;
-import com.android.ide.common.packaging.PackagingUtils;
+import com.android.annotations.Nullable;
+import com.android.ide.common.resources.configuration.FolderConfiguration;
 import com.android.resources.FolderTypeRelationship;
 import com.android.resources.ResourceConstants;
 import com.android.resources.ResourceFolderType;
@@ -32,7 +33,6 @@ import com.google.common.collect.Maps;
 import org.w3c.dom.Attr;
 import org.w3c.dom.Node;
 import org.w3c.dom.NodeList;
-import org.xml.sax.SAXParseException;
 
 import java.io.File;
 import java.util.List;
@@ -61,7 +61,7 @@ public class ResourceSet extends DataSet<ResourceItem, ResourceFile> {
         // get the type.
         FolderData folderData = getFolderData(file.getParentFile());
 
-        if (folderData.folderType == null) {
+        if (folderData == null) {
             return null;
         }
 
@@ -87,13 +87,13 @@ public class ResourceSet extends DataSet<ResourceItem, ResourceFile> {
                     continue;
                 }
 
-                ResourceItem r = ValueResourceParser2.getResource(resNode);
+                ResourceItem r = ValueResourceParser2.getResource(resNode, file);
                 if (r != null) {
                     resourceList.add(r);
                     if (r.getType() == ResourceType.DECLARE_STYLEABLE) {
                         // Need to also create ATTR items for its children
                         try {
-                            ValueResourceParser2.addStyleableItems(resNode, resourceList, null);
+                            ValueResourceParser2.addStyleableItems(resNode, resourceList, null, file);
                         } catch (MergingException ignored) {
                             // since we are not passing a dup map, this will never be thrown
                             assert false : file + ": " + ignored.getMessage();
@@ -127,11 +127,9 @@ public class ResourceSet extends DataSet<ResourceItem, ResourceFile> {
         File[] folders = sourceFolder.listFiles();
         if (folders != null) {
             for (File folder : folders) {
-                // TODO: use the aapt ignore pattern value.
-                if (folder.isDirectory() &&
-                        PackagingUtils.checkFolderForPackaging(folder.getName())) {
+                if (folder.isDirectory() && !isIgnored(folder)) {
                     FolderData folderData = getFolderData(folder);
-                    if (folderData.folderType != null) {
+                    if (folderData != null) {
                         parseFolder(sourceFolder, folder, folderData, logger);
                     }
                 }
@@ -148,7 +146,7 @@ public class ResourceSet extends DataSet<ResourceItem, ResourceFile> {
         File resFolder = file.getParentFile();
         // valid files are right under a resource folder under the source folder
         return resFolder.getParentFile().equals(sourceFolder) &&
-                PackagingUtils.checkFolderForPackaging(resFolder.getName()) &&
+                !isIgnored(resFolder) &&
                 ResourceFolderType.getFolderType(resFolder.getName()) != null;
     }
 
@@ -157,7 +155,7 @@ public class ResourceSet extends DataSet<ResourceItem, ResourceFile> {
             throws MergingException {
 
         FolderData folderData = getFolderData(changedFile.getParentFile());
-        if (folderData.folderType == null) {
+        if (folderData == null) {
             return true;
         }
 
@@ -245,7 +243,7 @@ public class ResourceSet extends DataSet<ResourceItem, ResourceFile> {
         File[] files = folder.listFiles();
         if (files != null && files.length > 0) {
             for (File file : files) {
-                if (!file.isFile() || !checkFileForAndroidRes(file)) {
+                if (!file.isFile() || isIgnored(file)) {
                     continue;
                 }
 
@@ -299,7 +297,7 @@ public class ResourceSet extends DataSet<ResourceItem, ResourceFile> {
      * @param folder the folder.
      * @return the FolderData object.
      */
-    @NonNull
+    @Nullable
     private static FolderData getFolderData(File folder) {
         FolderData fd = new FolderData();
 
@@ -307,7 +305,22 @@ public class ResourceSet extends DataSet<ResourceItem, ResourceFile> {
         int pos = folderName.indexOf(ResourceConstants.RES_QUALIFIER_SEP);
         if (pos != -1) {
             fd.folderType = ResourceFolderType.getTypeByName(folderName.substring(0, pos));
-            fd.qualifiers = folderName.substring(pos + 1);
+            if (fd.folderType == null) {
+                return null;
+            }
+
+            FolderConfiguration folderConfiguration = FolderConfiguration.getConfigForFolder(folderName);
+            if (folderConfiguration == null) {
+                return null;
+            }
+
+            // normalize it
+            folderConfiguration.normalize();
+
+            // get the qualifier portion from the folder config.
+            // the returned string starts with "-" so we remove that.
+            fd.qualifiers = folderConfiguration.getUniqueKey().substring(1);
+
         } else {
             fd.folderType = ResourceFolderType.getTypeByName(folderName);
         }

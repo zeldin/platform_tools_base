@@ -17,14 +17,14 @@
 package com.android.sdklib.internal.repository.packages;
 
 import com.android.sdklib.SdkManager;
+import com.android.sdklib.internal.repository.archives.ArchFilter;
 import com.android.sdklib.internal.repository.archives.Archive;
-import com.android.sdklib.internal.repository.archives.Archive.Arch;
-import com.android.sdklib.internal.repository.archives.Archive.Os;
-import com.android.sdklib.internal.repository.packages.BrokenPackage;
-import com.android.sdklib.internal.repository.packages.Package;
 import com.android.sdklib.internal.repository.sources.SdkRepoSource;
 import com.android.sdklib.internal.repository.sources.SdkSource;
+import com.android.sdklib.repository.FullRevision;
 import com.android.sdklib.repository.PkgProps;
+import com.android.sdklib.repository.descriptors.IPkgDesc;
+import com.android.sdklib.repository.descriptors.PkgDesc;
 
 import java.io.File;
 import java.util.ArrayList;
@@ -47,8 +47,6 @@ public class PackageTest extends TestCase {
                 String license,
                 String description,
                 String descUrl,
-                Os archiveOs,
-                Arch archiveArch,
                 String archiveOsPath) {
             super(source,
                     props,
@@ -56,8 +54,6 @@ public class PackageTest extends TestCase {
                     license,
                     description,
                     descUrl,
-                    archiveOs,
-                    archiveArch,
                     archiveOsPath);
         }
 
@@ -85,10 +81,17 @@ public class PackageTest extends TestCase {
         public String installId() {
             return "mock-pkg";  //$NON-NLS-1$
         }
+
+        @Override
+        public IPkgDesc getPkgDesc() {
+            return PkgDesc.Builder.newTool(
+                    new FullRevision(1, 2, 3, 4),
+                    FullRevision.NOT_SPECIFIED).create();
+        }
     }
 
     public void testCreate() throws Exception {
-        Properties props = createProps();
+        Properties props = createExpectedProps();
 
         Package p = new MockPackage(
                 null, //source
@@ -97,8 +100,6 @@ public class PackageTest extends TestCase {
                 null, //license
                 null, //description
                 null, //descUrl
-                Os.ANY, //archiveOs
-                Arch.ANY, //archiveArch
                 LOCAL_ARCHIVE_PATH //archiveOsPath
                 );
 
@@ -106,24 +107,22 @@ public class PackageTest extends TestCase {
     }
 
     public void testSaveProperties() throws Exception {
-        Properties props = createProps();
+        Properties expected = createExpectedProps();
 
         Package p = new MockPackage(
                 null, //source
-                props,
+                expected,
                 -1, //revision
                 null, //license
                 null, //description
                 null, //descUrl
-                Os.ANY, //archiveOs
-                Arch.ANY, //archiveArch
                 LOCAL_ARCHIVE_PATH //archiveOsPath
                 );
 
-        Properties props2 = new Properties();
-        p.saveProperties(props2);
+        Properties actual = new Properties();
+        p.saveProperties(actual);
 
-        assertEquals(props2, props);
+        assertEquals(expected, actual);
     }
 
     /**
@@ -132,23 +131,32 @@ public class PackageTest extends TestCase {
      * This is protected and used by derived classes to perform
      * a similar creation test.
      */
-    protected Properties createProps() {
+    protected Properties createExpectedProps() {
+        return createDefaultProps();
+    }
+
+    /**
+     * Similar to {@link #createExpectedProps()} but static so that
+     * it can be reused by test not deriving from {@link PackageTest}.
+     */
+    public static Properties createDefaultProps() {
         Properties props = new Properties();
 
         // Package properties
-        props.setProperty(PkgProps.PKG_REVISION, "42");
-        props.setProperty(PkgProps.PKG_LICENSE, "The License");
-        props.setProperty(PkgProps.PKG_DESC, "Some description.");
-        props.setProperty(PkgProps.PKG_DESC_URL, "http://description/url");
+        props.setProperty(PkgProps.PKG_REVISION,     "42");
+        props.setProperty(PkgProps.PKG_LICENSE,      "The License");
+        props.setProperty(PkgProps.PKG_DESC,         "Some description.");
+        props.setProperty(PkgProps.PKG_DESC_URL,     "http://description/url");
+        props.setProperty(PkgProps.PKG_LIST_DISPLAY, "Some description.");
         props.setProperty(PkgProps.PKG_RELEASE_NOTE, "Release Note");
-        props.setProperty(PkgProps.PKG_RELEASE_URL, "http://release/note");
-        props.setProperty(PkgProps.PKG_SOURCE_URL, "http://source/url");
-        props.setProperty(PkgProps.PKG_OBSOLETE, "true");
+        props.setProperty(PkgProps.PKG_RELEASE_URL,  "http://release/note");
+        props.setProperty(PkgProps.PKG_SOURCE_URL,   "http://source/url");
+        props.setProperty(PkgProps.PKG_OBSOLETE,     "true");
         return props;
     }
 
     /**
-     * Tests the values set via {@link #createProps()} after the
+     * Tests the values set via {@link #createExpectedProps()} after the
      * package has been created in {@link #testCreate()}.
      * This is protected and used by derived classes to perform
      * a similar creation test.
@@ -168,8 +176,7 @@ public class PackageTest extends TestCase {
         assertEquals(1, p.getArchives().length);
         Archive a = p.getArchives()[0];
         assertNotNull(a);
-        assertEquals(Os.ANY, a.getOs());
-        assertEquals(Arch.ANY, a.getArch());
+        assertEquals(new ArchFilter(null), a.getArchFilter());
         assertEquals(LOCAL_ARCHIVE_PATH, a.getLocalOsPath());
     }
 

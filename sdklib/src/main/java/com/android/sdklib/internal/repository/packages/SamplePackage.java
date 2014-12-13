@@ -25,12 +25,13 @@ import com.android.sdklib.SdkManager;
 import com.android.sdklib.internal.repository.IDescription;
 import com.android.sdklib.internal.repository.ITaskMonitor;
 import com.android.sdklib.internal.repository.archives.Archive;
-import com.android.sdklib.internal.repository.archives.Archive.Arch;
-import com.android.sdklib.internal.repository.archives.Archive.Os;
 import com.android.sdklib.internal.repository.sources.SdkSource;
 import com.android.sdklib.io.IFileOp;
+import com.android.sdklib.repository.MajorRevision;
 import com.android.sdklib.repository.PkgProps;
 import com.android.sdklib.repository.SdkRepoConstants;
+import com.android.sdklib.repository.descriptors.IPkgDesc;
+import com.android.sdklib.repository.descriptors.PkgDesc;
 
 import org.apache.commons.compress.archivers.zip.ZipArchiveEntry;
 import org.w3c.dom.Node;
@@ -60,6 +61,8 @@ public class SamplePackage extends MinToolsPackage
      */
     private final int mMinApiLevel;
 
+    private final IPkgDesc mPkgDesc;
+
     /**
      * Creates a new sample package from the attributes and elements of the given XML node.
      * This constructor should throw an exception if the package cannot be created.
@@ -88,6 +91,13 @@ public class SamplePackage extends MinToolsPackage
         mMinApiLevel = PackageParserUtils.getXmlInt(packageNode,
                     SdkRepoConstants.NODE_MIN_API_LEVEL,
                     MIN_API_LEVEL_NOT_SPECIFIED);
+
+        mPkgDesc = PkgDesc.Builder
+                .newSample(mVersion,
+                           (MajorRevision) getRevision(),
+                           getMinToolsRevision())
+                .setDescriptions(this)
+                .create();
     }
 
     /**
@@ -114,8 +124,6 @@ public class SamplePackage extends MinToolsPackage
                 null,                                   //license
                 null,                                   //description
                 null,                                   //descUrl
-                Os.ANY,                                 //archiveOs
-                Arch.ANY,                               //archiveArch
                 target.getPath(IAndroidTarget.SAMPLES)  //archiveOsPath
                 );
 
@@ -123,6 +131,13 @@ public class SamplePackage extends MinToolsPackage
 
         mMinApiLevel = getPropertyInt(props, PkgProps.SAMPLE_MIN_API_LEVEL,
                                              MIN_API_LEVEL_NOT_SPECIFIED);
+
+        mPkgDesc = PkgDesc.Builder
+                .newSample(mVersion,
+                          (MajorRevision) getRevision(),
+                          getMinToolsRevision())
+                .setDescriptions(this)
+                .create();
     }
 
     /**
@@ -149,8 +164,6 @@ public class SamplePackage extends MinToolsPackage
               null,                                   //license
               null,                                   //description
               null,                                   //descUrl
-              Os.ANY,                                 //archiveOs
-              Arch.ANY,                               //archiveArch
               archiveOsPath                           //archiveOsPath
               );
 
@@ -158,6 +171,19 @@ public class SamplePackage extends MinToolsPackage
 
         mMinApiLevel = getPropertyInt(props, PkgProps.SAMPLE_MIN_API_LEVEL,
                                              MIN_API_LEVEL_NOT_SPECIFIED);
+
+        mPkgDesc = PkgDesc.Builder
+                .newSample(mVersion,
+                           (MajorRevision) getRevision(),
+                           getMinToolsRevision())
+                .setDescriptions(this)
+                .create();
+    }
+
+    @Override
+    @NonNull
+    public IPkgDesc getPkgDesc() {
+        return mPkgDesc;
     }
 
     /**
@@ -208,6 +234,11 @@ public class SamplePackage extends MinToolsPackage
      */
     @Override
     public String getListDescription() {
+        String ld = getListDisplay();
+        if (!ld.isEmpty()) {
+            return String.format("%1$s%2$s", ld, isObsolete() ? " (Obsolete)" : "");
+        }
+
         String s = String.format("Samples for SDK API %1$s%2$s%3$s",
                 mVersion.getApiString(),
                 mVersion.isPreview() ? " Preview" : "",
@@ -220,6 +251,14 @@ public class SamplePackage extends MinToolsPackage
      */
     @Override
     public String getShortDescription() {
+        String ld = getListDisplay();
+        if (!ld.isEmpty()) {
+            return String.format("%1$s, revision %2$s%3$s",
+                    ld,
+                    getRevision().toShortString(),
+                    isObsolete() ? " (Obsolete)" : "");
+        }
+
         String s = String.format("Samples for SDK API %1$s%2$s, revision %3$s%4$s",
                 mVersion.getApiString(),
                 mVersion.isPreview() ? " Preview" : "",
@@ -498,7 +537,7 @@ public class SamplePackage extends MinToolsPackage
                 }
 
                 try {
-                    md.update(name.getBytes("UTF-8"));   //$NON-NLS-1$
+                    md.update(name.getBytes(SdkConstants.UTF_8));
                 } catch (UnsupportedEncodingException e) {
                     // There is no valid reason for UTF-8 to be unsupported. Ignore.
                 }

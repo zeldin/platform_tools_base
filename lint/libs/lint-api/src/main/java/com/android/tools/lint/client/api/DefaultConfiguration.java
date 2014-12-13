@@ -16,6 +16,9 @@
 
 package com.android.tools.lint.client.api;
 
+import static com.android.SdkConstants.CURRENT_PLATFORM;
+import static com.android.SdkConstants.PLATFORM_WINDOWS;
+
 import com.android.annotations.NonNull;
 import com.android.annotations.Nullable;
 import com.android.tools.lint.detector.api.Context;
@@ -23,23 +26,21 @@ import com.android.tools.lint.detector.api.Issue;
 import com.android.tools.lint.detector.api.Location;
 import com.android.tools.lint.detector.api.Project;
 import com.android.tools.lint.detector.api.Severity;
+import com.android.tools.lint.detector.api.TextFormat;
+import com.android.utils.XmlUtils;
 import com.google.common.annotations.Beta;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Splitter;
-import com.google.common.io.Closeables;
 
 import org.w3c.dom.Document;
 import org.w3c.dom.Element;
 import org.w3c.dom.NamedNodeMap;
 import org.w3c.dom.Node;
 import org.w3c.dom.NodeList;
-import org.xml.sax.InputSource;
 import org.xml.sax.SAXParseException;
 
-import java.io.BufferedInputStream;
 import java.io.BufferedWriter;
 import java.io.File;
-import java.io.FileInputStream;
 import java.io.FileWriter;
 import java.io.IOException;
 import java.io.Writer;
@@ -51,9 +52,9 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
-
-import javax.xml.parsers.DocumentBuilder;
-import javax.xml.parsers.DocumentBuilderFactory;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+import java.util.regex.PatternSyntaxException;
 
 /**
  * Default implementation of a {@link Configuration} which reads and writes
@@ -65,7 +66,8 @@ import javax.xml.parsers.DocumentBuilderFactory;
 @Beta
 public class DefaultConfiguration extends Configuration {
     private final LintClient mClient;
-    private static final String CONFIG_FILE_NAME = "lint.xml"; //$NON-NLS-1$
+    /** Default name of the configuration file */
+    public static final String CONFIG_FILE_NAME = "lint.xml"; //$NON-NLS-1$
 
     // Lint XML File
     @NonNull
@@ -76,6 +78,8 @@ public class DefaultConfiguration extends Configuration {
     private static final String ATTR_SEVERITY = "severity"; //$NON-NLS-1$
     @NonNull
     private static final String ATTR_PATH = "path"; //$NON-NLS-1$
+    @NonNull
+    private static final String ATTR_REGEXP = "regexp"; //$NON-NLS-1$
     @NonNull
     private static final String TAG_IGNORE = "ignore"; //$NON-NLS-1$
     @NonNull
@@ -88,6 +92,10 @@ public class DefaultConfiguration extends Configuration {
 
     /** Map from id to list of project-relative paths for suppressed warnings */
     private Map<String, List<String>> mSuppressed;
+
+    /** Map from id to regular expressions. */
+    @Nullable
+    private Map<String, List<Pattern>> mRegexps;
 
     /**
      * Map from id to custom {@link Severity} override
@@ -147,8 +155,7 @@ public class DefaultConfiguration extends Configuration {
             @NonNull Context context,
             @NonNull Issue issue,
             @Nullable Location location,
-            @NonNull String message,
-            @Nullable Object data) {
+            @NonNull String message) {
         ensureInitialized();
 
         String id = issue.getId();
@@ -170,11 +177,46 @@ public class DefaultConfiguration extends Configuration {
             }
         }
 
-        if (mParent != null) {
-            return mParent.isIgnored(context, issue, location, message, data);
+        if (mRegexps != null) {
+            List<Pattern> regexps = mRegexps.get(id);
+            if (regexps == null) {
+                regexps = mRegexps.get(VALUE_ALL);
+            }
+            if (regexps != null && location != null) {
+                // Check message
+                for (Pattern regexp : regexps) {
+                    Matcher matcher = regexp.matcher(message);
+                    if (matcher.find()) {
+                        return true;
+                    }
+                }
+
+                // Check location
+                File file = location.getFile();
+                String relativePath = context.getProject().getRelativePath(file);
+                boolean checkUnixPath = false;
+                for (Pattern regexp : regexps) {
+                    Matcher matcher = regexp.matcher(relativePath);
+                    if (matcher.find()) {
+                        return true;
+                    } else if (regexp.pattern().indexOf('/') != -1) {
+                        checkUnixPath = true;
+                    }
+                }
+
+                if (checkUnixPath && CURRENT_PLATFORM == PLATFORM_WINDOWS) {
+                    relativePath = relativePath.replace('\\', '/');
+                    for (Pattern regexp : regexps) {
+                        Matcher matcher = regexp.matcher(relativePath);
+                        if (matcher.find()) {
+                            return true;
+                        }
+                    }
+                }
+            }
         }
 
-        return false;
+        return mParent != null && mParent.isIgnored(context, issue, location, message);
     }
 
     @NonNull
@@ -217,7 +259,7 @@ public class DefaultConfiguration extends Configuration {
         if (args != null && args.length > 0) {
             message = String.format(message, args);
         }
-        message = "Failed to parse lint.xml configuration file: " + message;
+        message = "Failed to parse `lint.xml` configuration file: " + message;
         LintDriver driver = new LintDriver(new IssueRegistry() {
             @Override @NonNull public List<Issue> getIssues() {
                 return Collections.emptyList();
@@ -226,7 +268,7 @@ public class DefaultConfiguration extends Configuration {
         mClient.report(new Context(driver, mProject, mProject, mConfigFile),
                 IssueRegistry.LINT_ERROR,
                 mProject.getConfiguration().getSeverity(IssueRegistry.LINT_ERROR),
-                Location.create(mConfigFile), message, null);
+                Location.create(mConfigFile), message, TextFormat.RAW);
     }
 
     private void readConfig() {
@@ -237,16 +279,8 @@ public class DefaultConfiguration extends Configuration {
             return;
         }
 
-        @SuppressWarnings("resource") // Eclipse doesn't know about Closeables.closeQuietly
-        BufferedInputStream input = null;
         try {
-            DocumentBuilderFactory factory = DocumentBuilderFactory.newInstance();
-            input = new BufferedInputStream(new FileInputStream(mConfigFile));
-            InputSource source = new InputSource(input);
-            factory.setNamespaceAware(false);
-            factory.setValidating(false);
-            DocumentBuilder builder = factory.newDocumentBuilder();
-            Document document = builder.parse(source);
+            Document document = XmlUtils.parseUtfXmlFile(mConfigFile, false);
             NodeList issues = document.getElementsByTagName(TAG_ISSUE);
             Splitter splitter = Splitter.on(',').trimResults().omitEmptyStrings();
             for (int i = 0, count = issues.getLength(); i < count; i++) {
@@ -289,8 +323,13 @@ public class DefaultConfiguration extends Configuration {
                             Element ignore = (Element) child;
                             String path = ignore.getAttribute(ATTR_PATH);
                             if (path.isEmpty()) {
-                                formatError("Missing required %1$s attribute under %2$s",
-                                    ATTR_PATH, idList);
+                                String regexp = ignore.getAttribute(ATTR_REGEXP);
+                                if (regexp.isEmpty()) {
+                                    formatError("Missing required attribute %1$s or %2$s under %3$s",
+                                        ATTR_PATH, ATTR_REGEXP, idList);
+                                } else {
+                                    addRegexp(idList, ids, n, regexp, false);
+                                }
                             } else {
                                 // Normalize path format to File.separator. Also
                                 // handle the file format containing / or \.
@@ -300,13 +339,18 @@ public class DefaultConfiguration extends Configuration {
                                     path = path.replace('/', File.separatorChar);
                                 }
 
-                                for (String id : ids) {
-                                    List<String> paths = mSuppressed.get(id);
-                                    if (paths == null) {
-                                        paths = new ArrayList<String>(n / 2 + 1);
-                                        mSuppressed.put(id, paths);
+                                if (path.indexOf('*') != -1) {
+                                    String regexp = globToRegexp(path);
+                                    addRegexp(idList, ids, n, regexp, false);
+                                } else {
+                                    for (String id : ids) {
+                                        List<String> paths = mSuppressed.get(id);
+                                        if (paths == null) {
+                                            paths = new ArrayList<String>(n / 2 + 1);
+                                            mSuppressed.put(id, paths);
+                                        }
+                                        paths.add(path);
                                     }
-                                    paths.add(path);
                                 }
                             }
                         }
@@ -317,8 +361,75 @@ public class DefaultConfiguration extends Configuration {
             formatError(e.getMessage());
         } catch (Exception e) {
             mClient.log(e, null);
-        } finally {
-            Closeables.closeQuietly(input);
+        }
+    }
+
+    @VisibleForTesting
+    @NonNull
+    public static String globToRegexp(@NonNull String glob) {
+        StringBuilder sb = new StringBuilder(glob.length() * 2);
+        int begin = 0;
+        sb.append('^');
+        for (int i = 0, n = glob.length(); i < n; i++) {
+            char c = glob.charAt(i);
+            if (c == '*') {
+                begin = appendQuoted(sb, glob, begin, i) + 1;
+                if (i < n - 1 && glob.charAt(i + 1) == '*') {
+                    i++;
+                    begin++;
+                }
+                sb.append(".*?");
+            } else if (c == '?') {
+                begin = appendQuoted(sb, glob, begin, i) + 1;
+                sb.append(".?");
+            }
+        }
+        appendQuoted(sb, glob, begin, glob.length());
+        sb.append('$');
+        return sb.toString();
+    }
+
+    private static int appendQuoted(StringBuilder sb, String s, int from, int to) {
+        if (to > from) {
+            boolean isSimple = true;
+            for (int i = from; i < to; i++) {
+                char c = s.charAt(i);
+                if (!Character.isLetterOrDigit(c) && c != '/' && c != ' ') {
+                    isSimple = false;
+                    break;
+                }
+            }
+            if (isSimple) {
+                for (int i = from; i < to; i++) {
+                    sb.append(s.charAt(i));
+                }
+                return to;
+            }
+            sb.append(Pattern.quote(s.substring(from, to)));
+        }
+        return to;
+    }
+
+    private void addRegexp(@NonNull String idList, @NonNull Iterable<String> ids, int n,
+            @NonNull String regexp, boolean silent) {
+        try {
+            if (mRegexps == null) {
+                mRegexps = new HashMap<String, List<Pattern>>();
+            }
+            Pattern pattern = Pattern.compile(regexp);
+            for (String id : ids) {
+                List<Pattern> paths = mRegexps.get(id);
+                if (paths == null) {
+                    paths = new ArrayList<Pattern>(n / 2 + 1);
+                    mRegexps.put(id, paths);
+                }
+                paths.add(pattern);
+            }
+        } catch (PatternSyntaxException e) {
+            if (!silent) {
+                formatError("Invalid pattern %1$s under %2$s: %3$s",
+                        regexp, idList, e.getDescription());
+            }
         }
     }
 
@@ -359,17 +470,29 @@ public class DefaultConfiguration extends Configuration {
                                 severity.name().toLowerCase(Locale.US));
                     }
 
+                    List<Pattern> regexps = mRegexps != null ? mRegexps.get(id) : null;
                     List<String> paths = mSuppressed.get(id);
-                    if (paths != null && !paths.isEmpty()) {
+                    if (paths != null && !paths.isEmpty()
+                            || regexps != null && !regexps.isEmpty()) {
                         writer.write('>');
                         writer.write('\n');
                         // The paths are already kept in sorted order when they are modified
                         // by ignore(...)
-                        for (String path : paths) {
-                            writer.write("        <");                   //$NON-NLS-1$
-                            writer.write(TAG_IGNORE);
-                            writeAttribute(writer, ATTR_PATH, path.replace('\\', '/'));
-                            writer.write(" />\n");                       //$NON-NLS-1$
+                        if (paths != null) {
+                            for (String path : paths) {
+                                writer.write("        <");                   //$NON-NLS-1$
+                                writer.write(TAG_IGNORE);
+                                writeAttribute(writer, ATTR_PATH, path.replace('\\', '/'));
+                                writer.write(" />\n");                       //$NON-NLS-1$
+                            }
+                        }
+                        if (regexps != null) {
+                            for (Pattern regexp : regexps) {
+                                writer.write("        <");                   //$NON-NLS-1$
+                                writer.write(TAG_IGNORE);
+                                writeAttribute(writer, ATTR_REGEXP, regexp.pattern());
+                                writer.write(" />\n");                       //$NON-NLS-1$
+                            }
                         }
                         writer.write("    </");                          //$NON-NLS-1$
                         writer.write(TAG_ISSUE);
@@ -419,8 +542,7 @@ public class DefaultConfiguration extends Configuration {
             @NonNull Context context,
             @NonNull Issue issue,
             @Nullable Location location,
-            @NonNull String message,
-            @Nullable Object data) {
+            @NonNull String message) {
         // This configuration only supports suppressing warnings on a per-file basis
         if (location != null) {
             ignore(issue, location.getFile());

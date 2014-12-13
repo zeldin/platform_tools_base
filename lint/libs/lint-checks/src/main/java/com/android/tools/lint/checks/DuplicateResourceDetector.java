@@ -23,18 +23,21 @@ import static com.android.SdkConstants.TAG_ITEM;
 
 import com.android.annotations.NonNull;
 import com.android.annotations.Nullable;
+import com.android.ide.common.resources.ResourceUrl;
 import com.android.resources.ResourceFolderType;
 import com.android.resources.ResourceType;
 import com.android.tools.lint.detector.api.Category;
 import com.android.tools.lint.detector.api.Context;
 import com.android.tools.lint.detector.api.Implementation;
 import com.android.tools.lint.detector.api.Issue;
+import com.android.tools.lint.detector.api.LintUtils;
 import com.android.tools.lint.detector.api.Location;
 import com.android.tools.lint.detector.api.Location.Handle;
 import com.android.tools.lint.detector.api.ResourceXmlDetector;
 import com.android.tools.lint.detector.api.Scope;
 import com.android.tools.lint.detector.api.Severity;
 import com.android.tools.lint.detector.api.Speed;
+import com.android.tools.lint.detector.api.TextFormat;
 import com.android.tools.lint.detector.api.XmlContext;
 import com.android.utils.Pair;
 import com.google.common.collect.Lists;
@@ -43,6 +46,8 @@ import com.google.common.collect.Sets;
 
 import org.w3c.dom.Attr;
 import org.w3c.dom.Element;
+import org.w3c.dom.Node;
+import org.w3c.dom.NodeList;
 
 import java.io.File;
 import java.util.Collection;
@@ -62,7 +67,6 @@ public class DuplicateResourceDetector extends ResourceXmlDetector {
     public static final Issue ISSUE = Issue.create(
             "DuplicateDefinition", //$NON-NLS-1$
             "Duplicate definitions of resources",
-            "Discovers duplicate definitions of resources",
 
             "You can define a resource multiple times in different resource folders; that's how " +
             "string translations are done, for example. However, defining the same resource " +
@@ -75,8 +79,23 @@ public class DuplicateResourceDetector extends ResourceXmlDetector {
             Severity.ERROR,
             new Implementation(
                     DuplicateResourceDetector.class,
+                    // We should be able to do this incrementally!
                     Scope.ALL_RESOURCES_SCOPE,
                     Scope.RESOURCE_FILE_SCOPE));
+
+    /** Wrong resource value type */
+    public static final Issue TYPE_MISMATCH = Issue.create(
+            "ReferenceType", //$NON-NLS-1$
+            "Incorrect reference types",
+            "When you generate a resource alias, the resource you are pointing to must be " +
+                    "of the same type as the alias",
+            Category.CORRECTNESS,
+            8,
+            Severity.FATAL,
+            new Implementation(
+                    DuplicateResourceDetector.class,
+                    Scope.RESOURCE_FILE_SCOPE));
+
 
     private static final String PRODUCT = "product";   //$NON-NLS-1$
     private Map<ResourceType, Set<String>> mTypeMap;
@@ -126,6 +145,13 @@ public class DuplicateResourceDetector extends ResourceXmlDetector {
         String typeString = tag;
         if (tag.equals(TAG_ITEM)) {
             typeString = element.getAttribute(ATTR_TYPE);
+            if (typeString == null || typeString.isEmpty()) {
+                if (element.getParentNode().getNodeName().equals(
+                        ResourceType.STYLE.getName()) && isFirstElementChild(element)) {
+                    checkUniqueNames(context, (Element) element.getParentNode());
+                }
+                return;
+            }
         }
         ResourceType type = ResourceType.getEnum(typeString);
         if (type == null) {
@@ -135,7 +161,42 @@ public class DuplicateResourceDetector extends ResourceXmlDetector {
         if (type == ResourceType.ATTR
                 && element.getParentNode().getNodeName().equals(
                         ResourceType.DECLARE_STYLEABLE.getName())) {
+            if (isFirstElementChild(element)) {
+                checkUniqueNames(context, (Element) element.getParentNode());
+            }
             return;
+        }
+
+        NodeList children = element.getChildNodes();
+        int childCount = children.getLength();
+        for (int i = 0; i < childCount; i++) {
+            Node child = children.item(i);
+            if (child.getNodeType() == Node.TEXT_NODE) {
+                String text = child.getNodeValue();
+                for (int j = 0, length = text.length(); j < length; j++) {
+                    char c = text.charAt(j);
+                    if (c == '@') {
+                        if (!text.regionMatches(false, j + 1, typeString, 0,
+                                typeString.length()) && context.isEnabled(TYPE_MISMATCH)) {
+                            ResourceUrl url = ResourceUrl.parse(text.trim());
+                            if (url != null && url.type != type &&
+                                // colors can apparently be used as drawables
+                                !(type == ResourceType.DRAWABLE
+                                        && url.type == ResourceType.COLOR)) {
+                                String message = "Unexpected resource reference type; "
+                                        + "expected value of type `@" + type + "/`";
+                                context.report(TYPE_MISMATCH, element,
+                                        context.getLocation(child),
+                                        message);
+                            }
+                        }
+                        break;
+                    } else if (!Character.isWhitespace(c)) {
+                        break;
+                    }
+                }
+                break;
+            }
         }
 
         Set<String> names = mTypeMap.get(type);
@@ -145,9 +206,15 @@ public class DuplicateResourceDetector extends ResourceXmlDetector {
         }
 
         String name = attribute.getValue();
+        // AAPT will flatten the namespace, turning dots, dashes and colons into _
+        String originalName = name;
+        name = name.replace('.', '_').replace('-', '_').replace(':', '_');
+
         if (names.contains(name)) {
-            String message = String.format("%1$s has already been defined in this folder",
-                    name);
+            String message = String.format("`%1$s` has already been defined in this folder", name);
+            if (!name.equals(originalName)) {
+                message += " (`" + name + "` is equivalent to `" + originalName + "`)";
+            }
             Location location = context.getLocation(attribute);
             List<Pair<String, Handle>> list = mLocations.get(type);
             for (Pair<String, Handle> pair : list) {
@@ -157,7 +224,7 @@ public class DuplicateResourceDetector extends ResourceXmlDetector {
                     location.setSecondary(secondary);
                 }
             }
-            context.report(ISSUE, attribute, location, message, null);
+            context.report(ISSUE, attribute, location, message);
         } else {
             names.add(name);
             List<Pair<String, Handle>> list = mLocations.get(type);
@@ -165,8 +232,62 @@ public class DuplicateResourceDetector extends ResourceXmlDetector {
                 list = Lists.newArrayList();
                 mLocations.put(type, list);
             }
-            Location.Handle handle = context.parser.createLocationHandle(context, attribute);
+            Location.Handle handle = context.createLocationHandle(attribute);
             list.add(Pair.of(name, handle));
         }
+    }
+
+    private static void checkUniqueNames(XmlContext context, Element parent) {
+        List<Element> items = LintUtils.getChildren(parent);
+        if (items.size() > 1) {
+            Set<String> names = Sets.newHashSet();
+            for (Element item : items) {
+                Attr nameNode = item.getAttributeNode(ATTR_NAME);
+                if (nameNode != null) {
+                    String name = nameNode.getValue();
+                    if (names.contains(name) && context.isEnabled(ISSUE)) {
+                        Location location = context.getLocation(nameNode);
+                        for (Element prevItem : items) {
+                          Attr attribute = item.getAttributeNode(ATTR_NAME);
+                          if (attribute != null && name.equals(attribute.getValue())) {
+                                assert prevItem != item;
+                                Location prev = context.getLocation(prevItem);
+                                prev.setMessage("Previously defined here");
+                                location.setSecondary(prev);
+                                break;
+                            }
+                        }
+                        String message = String.format(
+                                "`%1$s` has already been defined in this `<%2$s>`",
+                                name, parent.getTagName());
+                        context.report(ISSUE, nameNode, location, message);
+                    }
+                    names.add(name);
+                }
+            }
+        }
+    }
+
+    private static boolean isFirstElementChild(Node node) {
+        node = node.getPreviousSibling();
+        while (node != null) {
+            if (node.getNodeType() == Node.ELEMENT_NODE) {
+                return false;
+            }
+            node = node.getPreviousSibling();
+        }
+
+        return true;
+    }
+
+    /**
+     * Returns the resource type expected for a {@link #TYPE_MISMATCH} error reported by
+     * this lint detector. Intended for IDE quickfix implementations.
+     *
+     * @param message the error message created by this lint detector
+     * @param format the format of the error message
+     */
+    public static String getExpectedType(@NonNull String message, @NonNull TextFormat format) {
+        return LintUtils.findSubstring(format.toText(message), "value of type @", "/");
     }
 }

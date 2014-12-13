@@ -16,16 +16,22 @@
 
 package com.android.tools.lint.detector.api;
 
+import static com.android.tools.lint.client.api.JavaParser.ResolvedNode;
+import static com.android.tools.lint.client.api.JavaParser.TypeDescriptor;
+
 import com.android.annotations.NonNull;
 import com.android.annotations.Nullable;
-import com.android.tools.lint.client.api.IJavaParser;
+import com.android.tools.lint.client.api.JavaParser;
 import com.android.tools.lint.client.api.LintDriver;
 
 import java.io.File;
 
+import lombok.ast.ClassDeclaration;
 import lombok.ast.ConstructorDeclaration;
 import lombok.ast.MethodDeclaration;
+import lombok.ast.MethodInvocation;
 import lombok.ast.Node;
+import lombok.ast.Position;
 
 /**
  * A {@link Context} used when checking Java files.
@@ -34,10 +40,13 @@ import lombok.ast.Node;
  * to adjust your code for the next tools release.</b>
  */
 public class JavaContext extends Context {
+    static final String SUPPRESS_COMMENT_PREFIX = "//noinspection "; //$NON-NLS-1$
+
     /** The parse tree */
-    public Node compilationUnit;
+    private Node mCompilationUnit;
+
     /** The parser which produced the parse tree */
-    public IJavaParser parser;
+    private final JavaParser mParser;
 
     /**
      * Constructs a {@link JavaContext} for running lint on the given file, with
@@ -51,13 +60,16 @@ public class JavaContext extends Context {
      *            the root project of all library projects, not necessarily the
      *            directly including project.
      * @param file the file to be analyzed
+     * @param parser the parser to use
      */
     public JavaContext(
             @NonNull LintDriver driver,
             @NonNull Project project,
             @Nullable Project main,
-            @NonNull File file) {
+            @NonNull File file,
+            @NonNull JavaParser parser) {
         super(driver, project, main, file);
+        mParser = parser;
     }
 
     /**
@@ -68,20 +80,36 @@ public class JavaContext extends Context {
      */
     @NonNull
     public Location getLocation(@NonNull Node node) {
-        if (parser != null) {
-            return parser.getLocation(this, node);
-        }
+        return mParser.getLocation(this, node);
+    }
 
-        return new Location(file, null, null);
+    @NonNull
+    public JavaParser getParser() {
+        return mParser;
+    }
+
+    @Nullable
+    public Node getCompilationUnit() {
+        return mCompilationUnit;
+    }
+
+    /**
+     * Sets the compilation result. Not intended for client usage; the lint infrastructure
+     * will set this when a context has been processed
+     *
+     * @param compilationUnit the parse tree
+     */
+    public void setCompilationUnit(@Nullable Node compilationUnit) {
+        mCompilationUnit = compilationUnit;
     }
 
     @Override
     public void report(@NonNull Issue issue, @Nullable Location location,
-            @NonNull String message, @Nullable Object data) {
-        if (mDriver.isSuppressed(issue, compilationUnit)) {
+            @NonNull String message) {
+        if (mDriver.isSuppressed(this, issue, mCompilationUnit)) {
             return;
         }
-        super.report(issue, location, message, data);
+        super.report(issue, location, message);
     }
 
     /**
@@ -94,20 +122,36 @@ public class JavaContext extends Context {
      *    nodes) and if so suppress the warning without involving the client.
      * @param location the location of the issue, or null if not known
      * @param message the message for this warning
-     * @param data any associated data, or null
      */
     public void report(
             @NonNull Issue issue,
             @Nullable Node scope,
             @Nullable Location location,
-            @NonNull String message,
-            @Nullable Object data) {
-        if (scope != null && mDriver.isSuppressed(issue, scope)) {
+            @NonNull String message) {
+        if (scope != null && mDriver.isSuppressed(this, issue, scope)) {
             return;
         }
-        super.report(issue, location, message, data);
+        super.report(issue, location, message);
     }
 
+    /**
+     * Report an error.
+     * Like {@link #report(Issue, Node, Location, String)} but with
+     * a now-unused data parameter at the end.
+     *
+     * @deprecated Use {@link #report(Issue, Node, Location, String)} instead;
+     *    this method is here for custom rule compatibility
+     */
+    @SuppressWarnings("UnusedDeclaration") // Potentially used by external existing custom rules
+    @Deprecated
+    public void report(
+            @NonNull Issue issue,
+            @Nullable Node scope,
+            @Nullable Location location,
+            @NonNull String message,
+            @SuppressWarnings("UnusedParameters") @Nullable Object data) {
+        report(issue, scope, location, message);
+    }
 
     @Nullable
     public static Node findSurroundingMethod(Node scope) {
@@ -123,5 +167,77 @@ public class JavaContext extends Context {
         }
 
         return null;
+    }
+
+    @Nullable
+    public static ClassDeclaration findSurroundingClass(@Nullable Node scope) {
+        while (scope != null) {
+            Class<? extends Node> type = scope.getClass();
+            // The Lombok AST uses a flat hierarchy of node type implementation classes
+            // so no need to do instanceof stuff here.
+            if (type == ClassDeclaration.class) {
+                return (ClassDeclaration) scope;
+            }
+
+            scope = scope.getParent();
+        }
+
+        return null;
+    }
+
+    @Override
+    @Nullable
+    protected String getSuppressCommentPrefix() {
+        return SUPPRESS_COMMENT_PREFIX;
+    }
+
+    public boolean isSuppressedWithComment(@NonNull Node scope, @NonNull Issue issue) {
+        // Check whether there is a comment marker
+        String contents = getContents();
+        assert contents != null; // otherwise we wouldn't be here
+        Position position = scope.getPosition();
+        if (position == null) {
+            return false;
+        }
+
+        int start = position.getStart();
+        return isSuppressedWithComment(start, issue);
+    }
+
+    @NonNull
+    public Location.Handle createLocationHandle(@NonNull Node node) {
+        return mParser.createLocationHandle(this, node);
+    }
+
+    @Nullable
+    public ResolvedNode resolve(@NonNull Node node) {
+        return mParser.resolve(this, node);
+    }
+
+    @Nullable
+    public TypeDescriptor getType(@NonNull Node node) {
+        return mParser.getType(this, node);
+    }
+
+    /**
+     * Returns true if the given method invocation node corresponds to a call on a
+     * {@code android.content.Context}
+     *
+     * @param node the method call node
+     * @return true iff the method call is on a class extending context
+     */
+    public boolean isContextMethod(@NonNull MethodInvocation node) {
+        // Method name used in many other contexts where it doesn't have the
+        // same semantics; only use this one if we can resolve types
+        // and we're certain this is the Context method
+        ResolvedNode resolved = resolve(node);
+        if (resolved instanceof JavaParser.ResolvedMethod) {
+            JavaParser.ResolvedMethod method = (JavaParser.ResolvedMethod) resolved;
+            JavaParser.ResolvedClass containingClass = method.getContainingClass();
+            if (containingClass.isSubclassOf("android.content.Context", false)) {
+                return true;
+            }
+        }
+        return false;
     }
 }

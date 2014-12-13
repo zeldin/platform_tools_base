@@ -18,8 +18,9 @@ package com.android.tools.lint;
 
 import static com.android.SdkConstants.DOT_JPG;
 import static com.android.SdkConstants.DOT_PNG;
-import static com.android.tools.lint.detector.api.Issue.OutputFormat.*;
 import static com.android.tools.lint.detector.api.LintUtils.endsWith;
+import static com.android.tools.lint.detector.api.TextFormat.HTML;
+import static com.android.tools.lint.detector.api.TextFormat.RAW;
 
 import com.android.tools.lint.checks.BuiltinIssueRegistry;
 import com.android.tools.lint.client.api.Configuration;
@@ -29,8 +30,10 @@ import com.android.tools.lint.detector.api.Location;
 import com.android.tools.lint.detector.api.Position;
 import com.android.tools.lint.detector.api.Project;
 import com.android.tools.lint.detector.api.Severity;
+import com.android.utils.SdkUtils;
 import com.google.common.annotations.Beta;
 import com.google.common.base.Charsets;
+import com.google.common.base.Joiner;
 import com.google.common.collect.Maps;
 import com.google.common.io.ByteStreams;
 import com.google.common.io.Closeables;
@@ -60,6 +63,7 @@ import java.util.Set;
 @Beta
 public class HtmlReporter extends Reporter {
     private static final boolean USE_HOLO_STYLE = true;
+    @SuppressWarnings("ConstantConditions")
     private static final String CSS = USE_HOLO_STYLE
             ? "hololike.css" : "default.css"; //$NON-NLS-1$ //$NON-NLS-2$
 
@@ -95,9 +99,10 @@ public class HtmlReporter extends Reporter {
         Map<Issue, String> missing = computeMissingIssues(issues);
 
         mWriter.write(
-                "<html>\n" +                                             //$NON-NLS-1$
+                "<!DOCTYPE html PUBLIC \"-//W3C//DTD XHTML 1.0 Transitional//EN\" \"http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd\">\n" + //$NON-NLS-1$
+                "<html xmlns=\"http://www.w3.org/1999/xhtml\">\n" +      //$NON-NLS-1$
                 "<head>\n" +                                             //$NON-NLS-1$
-                "<meta http-equiv=\"Content-Type\" content=\"text/html; charset=UTF-8\"/>" + //$NON-NLS-1$
+                "<meta http-equiv=\"Content-Type\" content=\"text/html; charset=UTF-8\" />" + //$NON-NLS-1$
                 "<title>" + mTitle + "</title>\n");                      //$NON-NLS-1$//$NON-NLS-2$
 
         writeStyleSheet();
@@ -105,7 +110,7 @@ public class HtmlReporter extends Reporter {
         if (!mSimpleFormat) {
             // JavaScript for collapsing/expanding long lists
             mWriter.write(
-                "<script language=\"javascript\"> \n" +                  //$NON-NLS-1$
+                "<script language=\"javascript\" type=\"text/javascript\"> \n" + //$NON-NLS-1$
                 "<!--\n" +                                               //$NON-NLS-1$
                 "function reveal(id) {\n" +                              //$NON-NLS-1$
                 "if (document.getElementById) {\n" +                     //$NON-NLS-1$
@@ -122,15 +127,15 @@ public class HtmlReporter extends Reporter {
                 "<body>\n" +                                             //$NON-NLS-1$
                 "<h1>" +                                                 //$NON-NLS-1$
                 mTitle +
-                "<div class=\"titleSeparator\"></div>\n" +               //$NON-NLS-1$
-                "</h1>\n");                                              //$NON-NLS-1$
+                "</h1>\n" +                                              //$NON-NLS-1$
+                "<div class=\"titleSeparator\"></div>\n");               //$NON-NLS-1$
 
         mWriter.write(String.format("Check performed at %1$s.",
                 new Date().toString()));
-        mWriter.write("<br/>");                                       //$NON-NLS-1$
+        mWriter.write("<br/>\n");                                        //$NON-NLS-1$
         mWriter.write(String.format("%1$d errors and %2$d warnings found:",
                 errorCount, warningCount));
-        mWriter.write("<br/><br/>");                                  //$NON-NLS-1$
+        mWriter.write("<br/><br/>\n");                                   //$NON-NLS-1$
 
         Issue previousIssue = null;
         if (!issues.isEmpty()) {
@@ -211,7 +216,7 @@ public class HtmlReporter extends Reporter {
                         addedImage = addImage(url, warning.location);
                     }
                     mWriter.write("<span class=\"message\">");           //$NON-NLS-1$
-                    appendEscapedText(warning.message);
+                    mWriter.append(RAW.convertTo(warning.message, HTML));
                     mWriter.write("</span>");                            //$NON-NLS-1$
                     if (addedImage) {
                         mWriter.write("<br clear=\"right\"/>");          //$NON-NLS-1$
@@ -240,7 +245,7 @@ public class HtmlReporter extends Reporter {
                                 mWriter.write(':');
                                 mWriter.write(' ');
                                 mWriter.write("<span class=\"message\">");           //$NON-NLS-1$
-                                appendEscapedText(message);
+                                mWriter.append(RAW.convertTo(message, HTML));
                                 mWriter.write("</span>");                            //$NON-NLS-1$
                                 mWriter.write("<br />");                         //$NON-NLS-1$
 
@@ -262,7 +267,6 @@ public class HtmlReporter extends Reporter {
                         }
                         mWriter.write("</ul>");
                         if (otherLocations > 0) {
-
                             String id = "Location" + count + "Div";          //$NON-NLS-1$
                             mWriter.write("<button id=\"");                  //$NON-NLS-1$
                             mWriter.write(id);
@@ -299,6 +303,16 @@ public class HtmlReporter extends Reporter {
                             && warning.location.getSecondary() != null) {
                         addImage(url, warning.location);
                     }
+
+                    if (warning.isVariantSpecific()) {
+                        mWriter.write("\n");
+                        mWriter.write("Applies to variants: ");
+                        mWriter.write(Joiner.on(", ").join(warning.getIncludedVariantNames()));
+                        mWriter.write("<br/>\n");
+                        mWriter.write("Does <b>not</b> apply to variants: ");
+                        mWriter.write(Joiner.on(", ").join(warning.getExcludedVariantNames()));
+                        mWriter.write("<br/>\n");
+                    }
                 }
                 if (partialHide) { // Close up the extra div
                     mWriter.write("</div>\n");                           //$NON-NLS-1$
@@ -306,6 +320,8 @@ public class HtmlReporter extends Reporter {
 
                 mWriter.write("</div>\n");                               //$NON-NLS-1$
                 writeIssueMetadata(issue, first.severity, null);
+
+                mWriter.write("</div>\n");                               //$NON-NLS-1$
             }
 
             if (!mClient.isCheckingSpecificIssues()) {
@@ -319,24 +335,34 @@ public class HtmlReporter extends Reporter {
         mWriter.write("\n</body>\n</html>");                             //$NON-NLS-1$
         mWriter.close();
 
-        String path = mOutput.getAbsolutePath();
-        System.out.println(String.format("Wrote HTML report to %1$s", path));
+        if (!mClient.getFlags().isQuiet()
+                && (mDisplayEmpty || errorCount > 0 || warningCount > 0)) {
+            String url = SdkUtils.fileToUrlString(mOutput.getAbsoluteFile());
+            System.out.println(String.format("Wrote HTML report to %1$s", url));
+        }
     }
 
     private void writeIssueMetadata(Issue issue, Severity severity, String disabledBy)
             throws IOException {
         mWriter.write("<div class=\"metadata\">");               //$NON-NLS-1$
 
-        if (mClient.getRegistry() instanceof BuiltinIssueRegistry &&
-                ((BuiltinIssueRegistry) mClient.getRegistry()).hasAutoFix("adt", issue)) { //$NON-NLS-1$
-            mWriter.write("Note: This issue has an associated quickfix operation in Eclipse/ADT");
-            if (mFixUrl != null) {
-                mWriter.write("&nbsp;<img border=\"0\" align=\"top\" src=\""); //$NON-NLS-1$
-                mWriter.write(mFixUrl);
-                mWriter.write("\" />\n");                            //$NON-NLS-1$
-            }
+        if (mClient.getRegistry() instanceof BuiltinIssueRegistry) {
+            boolean adtHasFix = QuickfixHandler.ADT.hasAutoFix(issue);
+            boolean studioHasFix = QuickfixHandler.STUDIO.hasAutoFix(issue);
+            if (adtHasFix || studioHasFix) {
+                String adt = "Eclipse/ADT";
+                String studio = "Android Studio/IntelliJ";
+                String tools = adtHasFix && studioHasFix
+                        ? (adt + " & " + studio) : studioHasFix ? studio : adt;
+                mWriter.write("Note: This issue has an associated quickfix operation in " + tools);
+                if (mFixUrl != null) {
+                    mWriter.write("&nbsp;<img alt=\"Fix\" border=\"0\" align=\"top\" src=\""); //$NON-NLS-1$
+                    mWriter.write(mFixUrl);
+                    mWriter.write("\" />\n");                            //$NON-NLS-1$
+                }
 
-            mWriter.write("<br>\n");
+                mWriter.write("<br>\n");
+            }
         }
 
         if (disabledBy != null) {
@@ -363,7 +389,7 @@ public class HtmlReporter extends Reporter {
 
         mWriter.write("<div class=\"summary\">\n");              //$NON-NLS-1$
         mWriter.write("Explanation: ");
-        String description = issue.getDescription(HTML);
+        String description = issue.getBriefDescription(HTML);
         mWriter.write(description);
         if (!description.isEmpty()
                 && Character.isLetter(description.charAt(description.length() - 1))) {
@@ -375,28 +401,27 @@ public class HtmlReporter extends Reporter {
         mWriter.write(explanationHtml);
         mWriter.write("\n</div>\n");                             //$NON-NLS-1$;
         List<String> moreInfo = issue.getMoreInfo();
-        if (moreInfo != null) {
-            mWriter.write("<br/>");                              //$NON-NLS-1$
-            mWriter.write("<div class=\"moreinfo\">");           //$NON-NLS-1$
-            mWriter.write("More info: ");
-            int count = moreInfo.size();
-            if (count > 1) {
-                mWriter.write("<ul>");                           //$NON-NLS-1$
-            }
-            for (String uri : moreInfo) {
-                if (count > 1) {
-                    mWriter.write("<li>");                       //$NON-NLS-1$
-                }
-                mWriter.write("<a href=\"");                     //$NON-NLS-1$
-                mWriter.write(uri);
-                mWriter.write("\">");                            //$NON-NLS-1$
-                mWriter.write(uri);
-                mWriter.write("</a></div>\n");                   //$NON-NLS-1$
-            }
-            if (count > 1) {
-                mWriter.write("</ul>");                          //$NON-NLS-1$
-            }
+        mWriter.write("<br/>");                                  //$NON-NLS-1$
+        mWriter.write("<div class=\"moreinfo\">");               //$NON-NLS-1$
+        mWriter.write("More info: ");
+        int count = moreInfo.size();
+        if (count > 1) {
+            mWriter.write("<ul>");                               //$NON-NLS-1$
         }
+        for (String uri : moreInfo) {
+            if (count > 1) {
+                mWriter.write("<li>");                           //$NON-NLS-1$
+            }
+            mWriter.write("<a href=\"");                         //$NON-NLS-1$
+            mWriter.write(uri);
+            mWriter.write("\">"    );                            //$NON-NLS-1$
+            mWriter.write(uri);
+            mWriter.write("</a>\n");                             //$NON-NLS-1$
+        }
+        if (count > 1) {
+            mWriter.write("</ul>");                              //$NON-NLS-1$
+        }
+        mWriter.write("</div>");                                 //$NON-NLS-1$
 
         mWriter.write("<br/>");                                  //$NON-NLS-1$
         mWriter.write(String.format(
@@ -405,8 +430,6 @@ public class HtmlReporter extends Reporter {
                 issue.getId(),
                 "<a href=\"#SuppressInfo\">", "</a>"));          //$NON-NLS-1$ //$NON-NLS-2$
         mWriter.write("<br/>\n");
-
-        mWriter.write("</div>");                                 //$NON-NLS-1$
     }
 
     private void writeSuppressInfo() throws IOException {
@@ -460,11 +483,11 @@ public class HtmlReporter extends Reporter {
     }
 
     private void writeMissingIssues(Map<Issue, String> missing) throws IOException {
-        mWriter.write("\n<a name=\"MissingIssues\"></a>\n");     //$NON-NLS-1$
-        mWriter.write("<div class=\"category\">");               //$NON-NLS-1$
+        mWriter.write("\n<a name=\"MissingIssues\"></a>\n");        //$NON-NLS-1$
+        mWriter.write("<div class=\"category\">");                  //$NON-NLS-1$
         mWriter.write("Disabled Checks");
-        mWriter.write("<div class=\"categorySeparator\"></div>\n");//$NON-NLS-1$
-        mWriter.write("</div>\n");//$NON-NLS-1$
+        mWriter.write("<div class=\"categorySeparator\"></div>\n"); //$NON-NLS-1$
+        mWriter.write("</div>\n");                                  //$NON-NLS-1$
 
         mWriter.write(
                 "The following issues were not run by lint, either " +
@@ -479,15 +502,16 @@ public class HtmlReporter extends Reporter {
 
         for (Issue issue : list) {
             mWriter.write("<a name=\"" + issue.getId() + "\"></a>\n"); //$NON-NLS-1$ //$NON-NLS-2$
-            mWriter.write("<div class=\"issue\">\n");                //$NON-NLS-1$
+            mWriter.write("<div class=\"issue\">\n");                  //$NON-NLS-1$
 
             // Explain this issue
-            mWriter.write("<div class=\"id\">");                     //$NON-NLS-1$
+            mWriter.write("<div class=\"id\">");                       //$NON-NLS-1$
             mWriter.write(issue.getId());
-            mWriter.write("<div class=\"issueSeparator\"></div>\n"); //$NON-NLS-1$
-            mWriter.write("</div>\n");                               //$NON-NLS-1$
+            mWriter.write("<div class=\"issueSeparator\"></div>\n");   //$NON-NLS-1$
+            mWriter.write("</div>\n");                                 //$NON-NLS-1$
             String disabledBy = missing.get(issue);
             writeIssueMetadata(issue, issue.getDefaultSeverity(), disabledBy);
+            mWriter.write("</div>\n");                                 //$NON-NLS-1$
         }
     }
 
@@ -495,17 +519,20 @@ public class HtmlReporter extends Reporter {
         if (USE_HOLO_STYLE) {
             mWriter.write(
                 "<link rel=\"stylesheet\" type=\"text/css\" " +          //$NON-NLS-1$
-                "href=\"http://fonts.googleapis.com/css?family=Roboto\">" );//$NON-NLS-1$
+                "href=\"http://fonts.googleapis.com/css?family=Roboto\" />\n" );//$NON-NLS-1$
         }
 
         URL cssUrl = HtmlReporter.class.getResource(CSS);
         if (mSimpleFormat) {
             // Inline the CSS
             mWriter.write("<style>\n");                                   //$NON-NLS-1$
-            @SuppressWarnings("resource") // Eclipse doesn't know about Closeables.closeQuietly
             InputStream input = cssUrl.openStream();
             byte[] bytes = ByteStreams.toByteArray(input);
-            Closeables.closeQuietly(input);
+            try {
+                Closeables.close(input, true /* swallowIOException */);
+            } catch (IOException e) {
+                // cannot happen
+            }
             String css = new String(bytes, Charsets.UTF_8);
             mWriter.write(css);
             mWriter.write("</style>\n");                                  //$NON-NLS-1$
@@ -514,7 +541,7 @@ public class HtmlReporter extends Reporter {
             if (ref != null) {
                 mWriter.write(
                 "<link rel=\"stylesheet\" type=\"text/css\" href=\""     //$NON-NLS-1$
-                            + ref + "\">\n");                            //$NON-NLS-1$
+                            + ref + "\" />\n");                          //$NON-NLS-1$
             }
         }
     }
@@ -569,6 +596,8 @@ public class HtmlReporter extends Reporter {
             if (imageUrl != null) {
                 mWriter.write("<img border=\"0\" align=\"top\" src=\""); //$NON-NLS-1$
                 mWriter.write(imageUrl);
+                mWriter.write("\" alt=\"");
+                mWriter.write(isError ? "Error" : "Warning");
                 mWriter.write("\" />\n");                            //$NON-NLS-1$
             }
 
@@ -608,7 +637,13 @@ public class HtmlReporter extends Reporter {
             mWriter.write(url);
             mWriter.write("\">");                        //$NON-NLS-1$
         }
-        mWriter.write(stripPath(path));
+
+        String displayPath = stripPath(path);
+        if (url != null && url.startsWith("../") && new File(displayPath).isAbsolute()) {
+            displayPath = url;
+        }
+        mWriter.write(displayPath);
+        //noinspection VariableNotUsedInsideIf
         if (url != null) {
             mWriter.write("</a>");                       //$NON-NLS-1$
         }
@@ -742,7 +777,7 @@ public class HtmlReporter extends Reporter {
         }
     }
 
-    private void appendEscapedText(String textValue) throws IOException {
+    protected void appendEscapedText(String textValue) throws IOException {
         for (int i = 0, n = textValue.length(); i < n; i++) {
             char c = textValue.charAt(i);
             if (c == '<') {
@@ -750,7 +785,7 @@ public class HtmlReporter extends Reporter {
             } else if (c == '&') {
                 mWriter.write("&amp;");                                  //$NON-NLS-1$
             } else if (c == '\n') {
-                mWriter.write("<br/>");
+                mWriter.write("<br/>\n");
             } else {
                 if (c > 255) {
                     mWriter.write("&#");                                 //$NON-NLS-1$

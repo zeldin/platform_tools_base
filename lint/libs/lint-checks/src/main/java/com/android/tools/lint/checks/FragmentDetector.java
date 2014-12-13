@@ -16,28 +16,31 @@
 
 package com.android.tools.lint.checks;
 
-import static com.android.SdkConstants.CONSTRUCTOR_NAME;
-import static com.android.SdkConstants.FRAGMENT;
-import static com.android.SdkConstants.FRAGMENT_V4;
+import static com.android.SdkConstants.CLASS_FRAGMENT;
+import static com.android.SdkConstants.CLASS_V4_FRAGMENT;
+import static com.android.tools.lint.client.api.JavaParser.ResolvedClass;
 
 import com.android.annotations.NonNull;
-import com.android.tools.lint.client.api.LintDriver;
+import com.android.annotations.Nullable;
 import com.android.tools.lint.detector.api.Category;
-import com.android.tools.lint.detector.api.ClassContext;
 import com.android.tools.lint.detector.api.Detector;
-import com.android.tools.lint.detector.api.Detector.ClassScanner;
+import com.android.tools.lint.detector.api.Detector.JavaScanner;
 import com.android.tools.lint.detector.api.Implementation;
 import com.android.tools.lint.detector.api.Issue;
-import com.android.tools.lint.detector.api.LintUtils;
+import com.android.tools.lint.detector.api.JavaContext;
+import com.android.tools.lint.detector.api.Location;
 import com.android.tools.lint.detector.api.Scope;
 import com.android.tools.lint.detector.api.Severity;
 import com.android.tools.lint.detector.api.Speed;
 
-import org.objectweb.asm.Opcodes;
-import org.objectweb.asm.tree.ClassNode;
-import org.objectweb.asm.tree.MethodNode;
-
+import java.lang.reflect.Modifier;
+import java.util.Arrays;
 import java.util.List;
+
+import lombok.ast.ClassDeclaration;
+import lombok.ast.ConstructorDeclaration;
+import lombok.ast.NormalTypeBody;
+import lombok.ast.TypeMember;
 
 /**
  * Checks that Fragment subclasses can be instantiated via
@@ -48,14 +51,11 @@ import java.util.List;
  *   http://stackoverflow.com/questions/8058809/fragment-activity-crashes-on-screen-rotate
  * (and countless duplicates)
  */
-public class FragmentDetector extends Detector implements ClassScanner {
-    private static final String FRAGMENT_NAME_SUFFIX = "Fragment";              //$NON-NLS-1$
-
+public class FragmentDetector extends Detector implements JavaScanner {
     /** Are fragment subclasses instantiatable? */
     public static final Issue ISSUE = Issue.create(
         "ValidFragment", //$NON-NLS-1$
         "Fragment not instantiatable",
-        "Ensures that `Fragment` subclasses can be instantiated",
 
         "From the Fragment documentation:\n" +
         "*Every* fragment must have an empty constructor, so it can be instantiated when " +
@@ -67,10 +67,10 @@ public class FragmentDetector extends Detector implements ClassScanner {
 
         Category.CORRECTNESS,
         6,
-        Severity.ERROR,
+        Severity.FATAL,
         new Implementation(
                 FragmentDetector.class,
-                Scope.CLASS_FILE_SCOPE)
+                Scope.JAVA_FILE_SCOPE)
         ).addMoreInfo(
             "http://developer.android.com/reference/android/app/Fragment.html#Fragment()"); //$NON-NLS-1$
 
@@ -85,75 +85,76 @@ public class FragmentDetector extends Detector implements ClassScanner {
         return Speed.FAST;
     }
 
-    // ---- Implements ClassScanner ----
+    // ---- Implements JavaScanner ----
+
+    @Nullable
+    @Override
+    public List<String> applicableSuperClasses() {
+        return Arrays.asList(CLASS_FRAGMENT, CLASS_V4_FRAGMENT);
+    }
 
     @Override
-    public void checkClass(@NonNull ClassContext context, @NonNull ClassNode classNode) {
-        if ((classNode.access & Opcodes.ACC_ABSTRACT) != 0) {
-            // Ignore abstract classes since they are clearly (and by definition) not intended to
-            // be instantiated. We're looking for accidental non-static or missing constructor
-            // scenarios here.
+    public void checkClass(@NonNull JavaContext context, @NonNull ClassDeclaration node,
+            @NonNull ResolvedClass cls) {
+        int flags = node.astModifiers().getEffectiveModifierFlags();
+        if ((flags & Modifier.ABSTRACT) != 0) {
             return;
         }
 
-        LintDriver driver = context.getDriver();
-
-        if (!(driver.isSubclassOf(classNode, FRAGMENT)
-                || driver.isSubclassOf(classNode, FRAGMENT_V4))) {
+        if ((flags & Modifier.PUBLIC) == 0) {
+            String message = String.format("This fragment class should be public (%1$s)",
+                    cls.getName());
+            context.report(ISSUE, node, context.getLocation(node.astName()), message);
             return;
         }
 
-        if ((classNode.access & Opcodes.ACC_PUBLIC) == 0) {
-            context.report(ISSUE, context.getLocation(classNode), String.format(
-                    "This fragment class should be public (%1$s)",
-                        ClassContext.createSignature(classNode.name, null, null)),
-                    null);
-            return;
-        }
-
-        if (classNode.name.indexOf('$') != -1 && !LintUtils.isStaticInnerClass(classNode)) {
-            context.report(ISSUE, context.getLocation(classNode), String.format(
-                    "This fragment inner class should be static (%1$s)",
-                        ClassContext.createSignature(classNode.name, null, null)),
-                    null);
+        if (cls.getContainingClass() != null && (flags & Modifier.STATIC) == 0) {
+            String message = String.format(
+                    "This fragment inner class should be static (%1$s)", cls.getName());
+            context.report(ISSUE, node, context.getLocation(node.astName()), message);
             return;
         }
 
         boolean hasDefaultConstructor = false;
-        @SuppressWarnings("rawtypes") // ASM API
-        List methodList = classNode.methods;
-        for (Object m : methodList) {
-            MethodNode method = (MethodNode) m;
-            if (method.name.equals(CONSTRUCTOR_NAME)) {
-                if (method.desc.equals("()V")) { //$NON-NLS-1$
-                    // The constructor must be public
-                    if ((method.access & Opcodes.ACC_PUBLIC) != 0) {
-                        hasDefaultConstructor = true;
+        boolean hasConstructor = false;
+        NormalTypeBody body = node.astBody();
+        if (body != null) {
+            for (TypeMember member : body.astMembers()) {
+                if (member instanceof ConstructorDeclaration) {
+                    hasConstructor = true;
+                    ConstructorDeclaration constructor = (ConstructorDeclaration) member;
+                    if (constructor.astParameters().isEmpty()) {
+                        // The constructor must be public
+                        if (constructor.astModifiers().isPublic()) {
+                            hasDefaultConstructor = true;
+                        } else {
+                            Location location = context.getLocation(
+                                    constructor.astTypeName());
+                            context.report(ISSUE, constructor, location,
+                                    "The default constructor must be public");
+                            // Also mark that we have a constructor so we don't complain again
+                            // below since we've already emitted a more specific error related
+                            // to the default constructor
+                            hasDefaultConstructor = true;
+                        }
                     } else {
-                        context.report(ISSUE, context.getLocation(method, classNode),
-                                "The default constructor must be public",
-                                null);
-                        // Also mark that we have a constructor so we don't complain again
-                        // below since we've already emitted a more specific error related
-                        // to the default constructor
-                        hasDefaultConstructor = true;
+                        Location location = context.getLocation(constructor.astTypeName());
+                        // TODO: Use separate issue for this which isn't an error
+                        String message = "Avoid non-default constructors in fragments: "
+                                + "use a default constructor plus "
+                                + "`Fragment#setArguments(Bundle)` instead";
+                        context.report(ISSUE, constructor, location, message);
                     }
-                } else if (!method.desc.contains("()")) { //$NON-NLS-1$
-                    context.report(ISSUE, context.getLocation(method, classNode),
-                            // TODO: Use separate issue for this which isn't an error
-                        "Avoid non-default constructors in fragments: use a default constructor " +
-                        "plus Fragment#setArguments(Bundle) instead",
-                        null);
                 }
             }
         }
 
-        if (!hasDefaultConstructor) {
-            context.report(ISSUE, context.getLocation(classNode), String.format(
+        if (!hasDefaultConstructor && hasConstructor) {
+            String message = String.format(
                     "This fragment should provide a default constructor (a public " +
-                    "constructor with no arguments) (%1$s)",
-                        ClassContext.createSignature(classNode.name, null, null)),
-                    null);
+                    "constructor with no arguments) (`%1$s`)",
+                    cls.getName());
+            context.report(ISSUE, node, context.getLocation(node.astName()), message);
         }
     }
 }

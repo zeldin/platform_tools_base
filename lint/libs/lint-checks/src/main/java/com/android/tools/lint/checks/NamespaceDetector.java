@@ -21,7 +21,6 @@ import static com.android.SdkConstants.AUTO_URI;
 import static com.android.SdkConstants.URI_PREFIX;
 import static com.android.SdkConstants.XMLNS_PREFIX;
 
-import com.android.SdkConstants;
 import com.android.annotations.NonNull;
 import com.android.tools.lint.detector.api.Category;
 import com.android.tools.lint.detector.api.Implementation;
@@ -49,29 +48,29 @@ import java.util.Map;
  */
 public class NamespaceDetector extends LayoutDetector {
 
+    @SuppressWarnings("unchecked")
     private static final Implementation IMPLEMENTATION = new Implementation(
             NamespaceDetector.class,
-            Scope.RESOURCE_FILE_SCOPE);
+            Scope.MANIFEST_AND_RESOURCE_SCOPE,
+            Scope.RESOURCE_FILE_SCOPE, Scope.MANIFEST_SCOPE);
 
     /** Typos in the namespace */
     public static final Issue TYPO = Issue.create(
             "NamespaceTypo", //$NON-NLS-1$
             "Misspelled namespace declaration",
-            "Looks for misspellings in namespace declarations",
 
             "Accidental misspellings in namespace declarations can lead to some very " +
             "obscure error messages. This check looks for potential misspellings to " +
             "help track these down.",
             Category.CORRECTNESS,
             8,
-            Severity.WARNING,
+            Severity.FATAL,
             IMPLEMENTATION);
 
     /** Unused namespace declarations */
     public static final Issue UNUSED = Issue.create(
             "UnusedNamespace", //$NON-NLS-1$
             "Unused namespace",
-            "Finds unused namespaces in XML documents",
 
             "Unused namespace declarations take up space and require processing that is not " +
             "necessary",
@@ -85,7 +84,6 @@ public class NamespaceDetector extends LayoutDetector {
     public static final Issue CUSTOM_VIEW = Issue.create(
             "LibraryCustomView", //$NON-NLS-1$
             "Custom views in libraries should use res-auto-namespace",
-            "Flags custom attributes in libraries, which must use the res-auto-namespace instead",
 
             "When using a custom view with custom attributes in a library project, the layout " +
             "must use the special namespace " + AUTO_URI + " instead of a URI which includes " +
@@ -94,14 +92,13 @@ public class NamespaceDetector extends LayoutDetector {
             "application project.",
             Category.CORRECTNESS,
             6,
-            Severity.ERROR,
+            Severity.FATAL,
             IMPLEMENTATION);
 
     /** Unused namespace declarations */
     public static final Issue RES_AUTO = Issue.create(
             "ResAuto", //$NON-NLS-1$
             "Hardcoded Package in Namespace",
-            "Finds resource namespaces with hardcoded package names",
 
             "In Gradle projects, the actual package used in the final APK can vary; for " +
             "you can add a `.debug` package suffix in one version and not the other. " +
@@ -112,9 +109,8 @@ public class NamespaceDetector extends LayoutDetector {
 
             Category.CORRECTNESS,
             9,
-            Severity.ERROR,
+            Severity.FATAL,
             IMPLEMENTATION);
-
 
     /** Prefix relevant for custom namespaces */
     private static final String XMLNS_ANDROID = "xmlns:android";                    //$NON-NLS-1$
@@ -153,17 +149,19 @@ public class NamespaceDetector extends LayoutDetector {
                         }
                         mUnusedNamespaces.put(item.getNodeName().substring(XMLNS_PREFIX.length()),
                                 attribute);
+                    } else if (value.startsWith("urn:")) { //$NON-NLS-1$
+                        continue;
                     } else if (!value.startsWith("http://")) { //$NON-NLS-1$
                         if (context.isEnabled(TYPO)) {
                             context.report(TYPO, attribute, context.getLocation(attribute),
-                                    "Suspicious namespace: should start with http://", null);
+                                    "Suspicious namespace: should start with `http://`");
                         }
 
                         continue;
                     } else if (!value.equals(AUTO_URI) && value.contains("auto") && //$NON-NLS-1$
                             value.startsWith("http://schemas.android.com/")) { //$NON-NLS-1$
                         context.report(RES_AUTO, attribute, context.getLocation(attribute),
-                                "Suspicious namespace: Did you mean " + AUTO_URI, null);
+                                "Suspicious namespace: Did you mean `" + AUTO_URI + "`?");
                     }
 
                     if (!context.isEnabled(TYPO)) {
@@ -181,10 +179,9 @@ public class NamespaceDetector extends LayoutDetector {
                                 String correctUri = URI_PREFIX + value.substring(resIndex + 5);
                                 context.report(TYPO, attribute, context.getLocation(attribute),
                                         String.format(
-                                            "Possible typo in URL: was \"%1$s\", should " +
-                                            "probably be \"%2$s\"",
-                                            value, correctUri),
-                                            null);
+                                            "Possible typo in URL: was `\"%1$s\"`, should " +
+                                            "probably be `\"%2$s\"`",
+                                            value, correctUri));
                             }
                         }
                         continue;
@@ -203,14 +200,13 @@ public class NamespaceDetector extends LayoutDetector {
                     if (value.equalsIgnoreCase(ANDROID_URI)) {
                         context.report(TYPO, attribute, context.getLocation(attribute),
                                 String.format(
-                                    "URI is case sensitive: was \"%1$s\", expected \"%2$s\"",
-                                    value, ANDROID_URI), null);
+                                    "URI is case sensitive: was `\"%1$s\"`, expected `\"%2$s\"`",
+                                    value, ANDROID_URI));
                     } else {
                         context.report(TYPO, attribute, context.getLocation(attribute),
                                 String.format(
-                                    "Unexpected namespace URI bound to the \"android\" " +
-                                    "prefix, was %1$s, expected %2$s", value, ANDROID_URI),
-                                null);
+                                    "Unexpected namespace URI bound to the `\"android\"` " +
+                                    "prefix, was `%1$s`, expected `%2$s`", value, ANDROID_URI));
                     }
                 }
             }
@@ -227,14 +223,14 @@ public class NamespaceDetector extends LayoutDetector {
             if (checkCustomAttrs) {
                 checkCustomNamespace(context, root);
             }
-            checkElement(context, root);
+            checkElement(root);
 
             if (mCheckUnused && !mUnusedNamespaces.isEmpty()) {
                 for (Map.Entry<String, Attr> entry : mUnusedNamespaces.entrySet()) {
                     String prefix = entry.getKey();
                     Attr attribute = entry.getValue();
                     context.report(UNUSED, attribute, context.getLocation(attribute),
-                            String.format("Unused namespace %1$s", prefix), null);
+                            String.format("Unused namespace `%1$s`", prefix));
                 }
             }
         }
@@ -250,19 +246,19 @@ public class NamespaceDetector extends LayoutDetector {
                         && !uri.equals(ANDROID_URI)) {
                     if (context.getProject().isGradleProject()) {
                         context.report(RES_AUTO, attribute, context.getLocation(attribute),
-                            "In Gradle projects, always use " + AUTO_URI + " for custom " +
-                            "attributes", null);
+                            "In Gradle projects, always use `" + AUTO_URI + "` for custom " +
+                            "attributes");
                     } else {
                         context.report(CUSTOM_VIEW, attribute, context.getLocation(attribute),
                             "When using a custom namespace attribute in a library project, " +
-                            "use the namespace \"" + AUTO_URI + "\" instead.", null);
+                            "use the namespace `\"" + AUTO_URI + "\"` instead.");
                     }
                 }
             }
         }
     }
 
-    private void checkElement(XmlContext context, Node node) {
+    private void checkElement(Node node) {
         if (node.getNodeType() == Node.ELEMENT_NODE) {
             if (mCheckUnused) {
                 NamedNodeMap attributes = node.getAttributes();
@@ -277,7 +273,7 @@ public class NamespaceDetector extends LayoutDetector {
 
             NodeList childNodes = node.getChildNodes();
             for (int i = 0, n = childNodes.getLength(); i < n; i++) {
-                checkElement(context, childNodes.item(i));
+                checkElement(childNodes.item(i));
             }
         }
     }

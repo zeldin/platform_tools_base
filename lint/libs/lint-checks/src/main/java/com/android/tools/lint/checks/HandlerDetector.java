@@ -18,7 +18,6 @@ package com.android.tools.lint.checks;
 
 import static com.android.SdkConstants.CONSTRUCTOR_NAME;
 
-import com.android.SdkConstants;
 import com.android.annotations.NonNull;
 import com.android.tools.lint.detector.api.Category;
 import com.android.tools.lint.detector.api.ClassContext;
@@ -45,7 +44,6 @@ public class HandlerDetector extends Detector implements ClassScanner {
     public static final Issue ISSUE = Issue.create(
             "HandlerLeak", //$NON-NLS-1$
             "Handler reference leaks",
-            "Ensures that Handler classes do not hold on to a reference to an outer class",
 
             "Since this Handler is declared as an inner class, it may prevent the outer " +
             "class from being garbage collected. If the Handler is using a Looper or " +
@@ -95,8 +93,7 @@ public class HandlerDetector extends Detector implements ClassScanner {
             Location location = context.getLocation(classNode);
             context.report(ISSUE, location, String.format(
                     "This Handler class should be static or leaks might occur (%1$s)",
-                        ClassContext.createSignature(classNode.name, null, null)),
-                    null);
+                        ClassContext.createSignature(classNode.name, null, null)));
         }
     }
 }

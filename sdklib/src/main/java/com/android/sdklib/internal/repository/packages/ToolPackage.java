@@ -17,6 +17,7 @@
 package com.android.sdklib.internal.repository.packages;
 
 import com.android.SdkConstants;
+import com.android.annotations.NonNull;
 import com.android.annotations.Nullable;
 import com.android.annotations.VisibleForTesting;
 import com.android.annotations.VisibleForTesting.Visibility;
@@ -24,16 +25,16 @@ import com.android.sdklib.SdkManager;
 import com.android.sdklib.internal.repository.IDescription;
 import com.android.sdklib.internal.repository.ITaskMonitor;
 import com.android.sdklib.internal.repository.archives.Archive;
-import com.android.sdklib.internal.repository.archives.Archive.Arch;
-import com.android.sdklib.internal.repository.archives.Archive.Os;
 import com.android.sdklib.internal.repository.sources.SdkSource;
 import com.android.sdklib.repository.FullRevision;
+import com.android.sdklib.repository.FullRevision.PreviewComparison;
 import com.android.sdklib.repository.PkgProps;
 import com.android.sdklib.repository.SdkRepoConstants;
-import com.android.sdklib.repository.FullRevision.PreviewComparison;
-import com.android.sdklib.util.GrabProcessOutput;
-import com.android.sdklib.util.GrabProcessOutput.IProcessOutput;
-import com.android.sdklib.util.GrabProcessOutput.Wait;
+import com.android.sdklib.repository.descriptors.IPkgDesc;
+import com.android.sdklib.repository.descriptors.PkgDesc;
+import com.android.utils.GrabProcessOutput;
+import com.android.utils.GrabProcessOutput.IProcessOutput;
+import com.android.utils.GrabProcessOutput.Wait;
 
 import org.w3c.dom.Node;
 
@@ -56,6 +57,8 @@ public class ToolPackage extends FullRevisionPackage implements IMinPlatformTool
      * or {@link #MIN_PLATFORM_TOOLS_REV_INVALID} if the value was missing.
      */
     private final FullRevision mMinPlatformToolsRevision;
+
+    private final IPkgDesc mPkgDesc;
 
     /**
      * Creates a new tool package from the attributes and elements of the given XML node.
@@ -87,6 +90,12 @@ public class ToolPackage extends FullRevisionPackage implements IMinPlatformTool
                                 SdkRepoConstants.NODE_PLATFORM_TOOL));
             }
         }
+
+        mPkgDesc = PkgDesc.Builder
+                .newTool(getRevision(),
+                         mMinPlatformToolsRevision)
+                .setDescriptions(this)
+                .create();
     }
 
     /**
@@ -103,11 +112,9 @@ public class ToolPackage extends FullRevisionPackage implements IMinPlatformTool
             String license,
             String description,
             String descUrl,
-            Os archiveOs,
-            Arch archiveArch,
             String archiveOsPath) {
         return new ToolPackage(source, props, revision, license, description,
-                descUrl, archiveOs, archiveArch, archiveOsPath);
+                descUrl, archiveOsPath);
     }
 
     @VisibleForTesting(visibility=Visibility.PRIVATE)
@@ -118,8 +125,6 @@ public class ToolPackage extends FullRevisionPackage implements IMinPlatformTool
                 String license,
                 String description,
                 String descUrl,
-                Os archiveOs,
-                Arch archiveArch,
                 String archiveOsPath) {
         super(source,
                 props,
@@ -127,8 +132,6 @@ public class ToolPackage extends FullRevisionPackage implements IMinPlatformTool
                 license,
                 description,
                 descUrl,
-                archiveOs,
-                archiveArch,
                 archiveOsPath);
 
         // Setup min-platform-tool
@@ -142,6 +145,18 @@ public class ToolPackage extends FullRevisionPackage implements IMinPlatformTool
         }
 
         mMinPlatformToolsRevision = rev;
+
+        mPkgDesc = PkgDesc.Builder
+                .newTool(getRevision(),
+                         mMinPlatformToolsRevision)
+                .setDescriptions(this)
+                .create();
+    }
+
+    @Override
+    @NonNull
+    public IPkgDesc getPkgDesc() {
+        return mPkgDesc;
     }
 
     @Override
@@ -171,7 +186,9 @@ public class ToolPackage extends FullRevisionPackage implements IMinPlatformTool
      */
     @Override
     public String getListDescription() {
-        return String.format("Android SDK Tools%1$s",
+        String ld = getListDisplay();
+        return String.format("%1$s%2$s",
+                ld.isEmpty() ? "Android SDK Tools" : ld,
                 isObsolete() ? " (Obsolete)" : "");
     }
 
@@ -180,6 +197,14 @@ public class ToolPackage extends FullRevisionPackage implements IMinPlatformTool
      */
     @Override
     public String getShortDescription() {
+        String ld = getListDisplay();
+        if (!ld.isEmpty()) {
+            return String.format("%1$s, revision %2$s%3$s",
+                    ld,
+                    getRevision().toShortString(),
+                    isObsolete() ? " (Obsolete)" : "");
+        }
+
         return String.format("Android SDK Tools, revision %1$s%2$s",
                 getRevision().toShortString(),
                 isObsolete() ? " (Obsolete)" : "");

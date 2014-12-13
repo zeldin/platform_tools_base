@@ -74,20 +74,24 @@ public class Storage {
     }
 
     public enum Unit{
-        B("B", 1),
-        KiB("KiB", 1024),
-        MiB("MiB", 1024 * 1024),
-        GiB("GiB", 1024 * 1024 * 1024),
-        TiB("TiB", 1024l * 1024l * 1024l * 1024l);
+        B("B", "B", 1),
+        KiB("KiB", "KB", 1024),
+        MiB("MiB", "MB", 1024 * 1024),
+        GiB("GiB", "GB", 1024 * 1024 * 1024),
+        TiB("TiB", "TB", 1024l * 1024l * 1024l * 1024l);
 
         @NonNull
         private String mValue;
 
+        @NonNull
+        private String mDisplayValue;
+
         /** The number of bytes needed to have one of the given unit */
         private long mNoBytes;
 
-        Unit(@NonNull String val, long noBytes) {
+        Unit(@NonNull String val, @NonNull String displayVal, long noBytes) {
             mValue = val;
+            mDisplayValue = displayVal;
             mNoBytes = noBytes;
         }
 
@@ -109,6 +113,10 @@ public class Storage {
         public String toString() {
             return mValue;
         }
+
+        public String getDisplayValue() {
+          return mDisplayValue;
+        }
     }
 
     /**
@@ -128,4 +136,12 @@ public class Storage {
         }
         return optimalUnit;
     }
+
+    @Override
+    public String toString() {
+        Unit u = getAppropriateUnits();
+        return String.format("%d %s", getSizeAsUnit(u), u);
+    }
+
+
 }

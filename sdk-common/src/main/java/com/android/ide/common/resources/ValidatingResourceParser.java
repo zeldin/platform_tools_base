@@ -16,6 +16,7 @@
 
 package com.android.ide.common.resources;
 
+import com.android.SdkConstants;
 import com.android.annotations.NonNull;
 import com.google.common.io.Closeables;
 
@@ -64,11 +65,19 @@ public class ValidatingResourceParser {
             throws IOException {
         // No need to validate framework files
         if (mIsFramework) {
-            Closeables.closeQuietly(input);
+            try {
+                Closeables.close(input, true /* swallowIOException */);
+            } catch (IOException e) {
+                // cannot happen
+            }
             return true;
         }
         if (mContext.needsFullAapt()) {
-            Closeables.closeQuietly(input);
+            try {
+                Closeables.close(input, true /* swallowIOException */);
+            } catch (IOException e) {
+                // cannot happen
+            }
             return false;
         }
 
@@ -79,7 +88,7 @@ public class ValidatingResourceParser {
             if (input instanceof FileInputStream) {
                 input = new BufferedInputStream(input);
             }
-            parser.setInput(input, "UTF-8"); //$NON-NLS-1$
+            parser.setInput(input, SdkConstants.UTF_8);
 
             return parse(path, parser);
         } catch (XmlPullParserException e) {
@@ -107,7 +116,11 @@ public class ValidatingResourceParser {
             mContext.addError(error);
             return false;
         } finally {
-            Closeables.closeQuietly(input);
+            try {
+                Closeables.close(input, true /* swallowIOException */);
+            } catch (IOException e) {
+                // cannot happen
+            }
         }
     }
 

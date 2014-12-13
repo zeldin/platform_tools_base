@@ -1,12 +1,10 @@
 <?xml version="1.0"?>
 <template
-    format="3"
-    revision="1"
-    name="New Daydream"
+    format="4"
+    revision="2"
+    name="Daydream"
     description="Creates a new Daydream service component, for use on devices running Android 4.2 and later."
     minBuildApi="17">
-
-    <category value="Other" />
 
     <parameter
         id="className"

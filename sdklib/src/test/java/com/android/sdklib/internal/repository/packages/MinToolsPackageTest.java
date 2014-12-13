@@ -17,12 +17,11 @@
 package com.android.sdklib.internal.repository.packages;
 
 import com.android.sdklib.SdkManager;
-import com.android.sdklib.internal.repository.archives.Archive.Arch;
-import com.android.sdklib.internal.repository.archives.Archive.Os;
-import com.android.sdklib.internal.repository.packages.MinToolsPackage;
-import com.android.sdklib.internal.repository.packages.Package;
 import com.android.sdklib.internal.repository.sources.SdkSource;
+import com.android.sdklib.repository.FullRevision;
 import com.android.sdklib.repository.PkgProps;
+import com.android.sdklib.repository.descriptors.IPkgDesc;
+import com.android.sdklib.repository.descriptors.PkgDesc;
 
 import java.io.File;
 import java.util.Properties;
@@ -38,8 +37,6 @@ public class MinToolsPackageTest extends PackageTest {
                 String license,
                 String description,
                 String descUrl,
-                Os archiveOs,
-                Arch archiveArch,
                 String archiveOsPath) {
             super(source,
                     props,
@@ -47,8 +44,6 @@ public class MinToolsPackageTest extends PackageTest {
                     license,
                     description,
                     descUrl,
-                    archiveOs,
-                    archiveArch,
                     archiveOsPath);
         }
 
@@ -76,11 +71,18 @@ public class MinToolsPackageTest extends PackageTest {
         public String installId() {
             return "";  //$NON-NLS-1$
         }
+
+        @Override
+        public IPkgDesc getPkgDesc() {
+            return PkgDesc.Builder.newTool(
+                    new FullRevision(1, 2, 3, 4),
+                    FullRevision.NOT_SPECIFIED).create();
+        }
     }
 
     @Override
     public void testCreate() {
-        Properties props = createProps();
+        Properties props = createExpectedProps();
 
         MockMinToolsPackage p = new MockMinToolsPackage(
                 null, //source
@@ -89,8 +91,6 @@ public class MinToolsPackageTest extends PackageTest {
                 null, //license
                 null, //description
                 null, //descUrl
-                Os.ANY, //archiveOs
-                Arch.ANY, //archiveArch
                 LOCAL_ARCHIVE_PATH
                 );
 
@@ -99,29 +99,27 @@ public class MinToolsPackageTest extends PackageTest {
 
     @Override
     public void testSaveProperties() {
-        Properties props = createProps();
+        Properties expected = createExpectedProps();
 
         MockMinToolsPackage p = new MockMinToolsPackage(
                 null, //source
-                props,
+                expected,
                 -1, //revision
                 null, //license
                 null, //description
                 null, //descUrl
-                Os.ANY, //archiveOs
-                Arch.ANY, //archiveArch
                 LOCAL_ARCHIVE_PATH
                 );
 
-        Properties props2 = new Properties();
-        p.saveProperties(props2);
+        Properties actual = new Properties();
+        p.saveProperties(actual);
 
-        assertEquals(props2, props);
+        assertEquals(expected, actual);
     }
 
     @Override
-    protected Properties createProps() {
-        Properties props = super.createProps();
+    protected Properties createExpectedProps() {
+        Properties props = super.createExpectedProps();
 
         // MinToolsPackage properties
         props.setProperty(PkgProps.MIN_TOOLS_REV, "3.0.1");

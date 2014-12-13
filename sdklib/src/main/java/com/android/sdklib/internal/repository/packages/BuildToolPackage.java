@@ -17,16 +17,17 @@
 package com.android.sdklib.internal.repository.packages;
 
 import com.android.SdkConstants;
+import com.android.annotations.NonNull;
 import com.android.annotations.VisibleForTesting;
 import com.android.annotations.VisibleForTesting.Visibility;
 import com.android.sdklib.SdkManager;
 import com.android.sdklib.internal.repository.IDescription;
-import com.android.sdklib.internal.repository.archives.Archive.Arch;
-import com.android.sdklib.internal.repository.archives.Archive.Os;
 import com.android.sdklib.internal.repository.sources.SdkSource;
 import com.android.sdklib.repository.FullRevision;
-import com.android.sdklib.repository.PkgProps;
 import com.android.sdklib.repository.FullRevision.PreviewComparison;
+import com.android.sdklib.repository.PkgProps;
+import com.android.sdklib.repository.descriptors.IPkgDesc;
+import com.android.sdklib.repository.descriptors.PkgDesc;
 
 import org.w3c.dom.Node;
 
@@ -44,6 +45,8 @@ public class BuildToolPackage extends FullRevisionPackage {
     /** The base value returned by {@link BuildToolPackage#installId()}. */
     private static final String INSTALL_ID_BASE = SdkConstants.FD_BUILD_TOOLS + '-';
 
+    private final IPkgDesc mPkgDesc;
+
     /**
      * Creates a new build-tool package from the attributes and elements of the given XML node.
      * This constructor should throw an exception if the package cannot be created.
@@ -60,6 +63,11 @@ public class BuildToolPackage extends FullRevisionPackage {
             String nsUri,
             Map<String,String> licenses) {
         super(source, packageNode, nsUri, licenses);
+
+        mPkgDesc = PkgDesc.Builder
+                .newBuildTool(getRevision())
+                .setDescriptions(this)
+                .create();
     }
 
     /**
@@ -139,17 +147,20 @@ public class BuildToolPackage extends FullRevisionPackage {
         }
 
         if (error == null && rev != null) {
-            return new BuildToolPackage(
+            BuildToolPackage pkg = new BuildToolPackage(
                     null,                       //source
                     props,
                     0,                          //revision (extracted from props)
                     null,                       //license
                     null,                       //description
                     null,                       //descUrl
-                    Os.getCurrentOs(),          //archiveOs
-                    Arch.getCurrentArch(),      //archiveArch
                     buildToolDir.getAbsolutePath());
 
+            if (pkg.hasCompatibleArchive()) {
+                return pkg;
+            } else {
+                error = "Package is not compatible with current OS";
+            }
         }
 
 
@@ -166,10 +177,16 @@ public class BuildToolPackage extends FullRevisionPackage {
 
         String longDesc = sb.toString();
 
+        IPkgDesc desc = PkgDesc.Builder
+                .newBuildTool(rev != null ? rev : new FullRevision(FullRevision.MISSING_MAJOR_REV))
+                .setDescriptionShort(shortDesc)
+                .create();
+
         return new BrokenPackage(props, shortDesc, longDesc,
                 IMinApiLevelDependency.MIN_API_LEVEL_NOT_SPECIFIED,
                 IExactApiLevelDependency.API_LEVEL_INVALID,
-                buildToolDir.getAbsolutePath());
+                buildToolDir.getAbsolutePath(),
+                desc);
     }
 
     @VisibleForTesting(visibility=Visibility.PRIVATE)
@@ -180,8 +197,6 @@ public class BuildToolPackage extends FullRevisionPackage {
                 String license,
                 String description,
                 String descUrl,
-                Os archiveOs,
-                Arch archiveArch,
                 String archiveOsPath) {
         super(source,
                 props,
@@ -189,9 +204,18 @@ public class BuildToolPackage extends FullRevisionPackage {
                 license,
                 description,
                 descUrl,
-                archiveOs,
-                archiveArch,
                 archiveOsPath);
+
+        mPkgDesc = PkgDesc.Builder
+                .newBuildTool(getRevision())
+                .setDescriptions(this)
+                .create();
+    }
+
+    @Override
+    @NonNull
+    public IPkgDesc getPkgDesc() {
+        return mPkgDesc;
     }
 
     /**
@@ -213,6 +237,11 @@ public class BuildToolPackage extends FullRevisionPackage {
      */
     @Override
     public String getListDescription() {
+        String ld = getListDisplay();
+        if (!ld.isEmpty()) {
+            return String.format("%1$s%2$s", ld, isObsolete() ? " (Obsolete)" : "");
+        }
+
         return String.format("Android SDK Build-tools%1$s",
                 isObsolete() ? " (Obsolete)" : "");
     }
@@ -222,6 +251,14 @@ public class BuildToolPackage extends FullRevisionPackage {
      */
     @Override
     public String getShortDescription() {
+        String ld = getListDisplay();
+        if (!ld.isEmpty()) {
+            return String.format("%1$s, revision %2$s%3$s",
+                    ld,
+                    getRevision().toShortString(),
+                    isObsolete() ? " (Obsolete)" : "");
+        }
+
         return String.format("Android SDK Build-tools, revision %1$s%2$s",
                 getRevision().toShortString(),
                 isObsolete() ? " (Obsolete)" : "");

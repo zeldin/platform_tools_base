@@ -20,18 +20,25 @@ import static com.android.SdkConstants.ABSOLUTE_LAYOUT;
 import static com.android.SdkConstants.ANDROID_URI;
 import static com.android.SdkConstants.ATTR_BACKGROUND;
 import static com.android.SdkConstants.ATTR_ID;
+import static com.android.SdkConstants.ATTR_PADDING;
+import static com.android.SdkConstants.ATTR_PADDING_BOTTOM;
+import static com.android.SdkConstants.ATTR_PADDING_END;
+import static com.android.SdkConstants.ATTR_PADDING_LEFT;
+import static com.android.SdkConstants.ATTR_PADDING_RIGHT;
+import static com.android.SdkConstants.ATTR_PADDING_START;
+import static com.android.SdkConstants.ATTR_PADDING_TOP;
 import static com.android.SdkConstants.ATTR_STYLE;
 import static com.android.SdkConstants.FRAME_LAYOUT;
 import static com.android.SdkConstants.GRID_LAYOUT;
 import static com.android.SdkConstants.GRID_VIEW;
 import static com.android.SdkConstants.HORIZONTAL_SCROLL_VIEW;
 import static com.android.SdkConstants.LINEAR_LAYOUT;
-import static com.android.SdkConstants.VIEW_MERGE;
 import static com.android.SdkConstants.RADIO_GROUP;
 import static com.android.SdkConstants.RELATIVE_LAYOUT;
 import static com.android.SdkConstants.SCROLL_VIEW;
 import static com.android.SdkConstants.TABLE_LAYOUT;
 import static com.android.SdkConstants.TABLE_ROW;
+import static com.android.SdkConstants.VIEW_MERGE;
 
 import com.android.annotations.NonNull;
 import com.android.tools.lint.detector.api.Category;
@@ -65,7 +72,6 @@ public class UselessViewDetector extends LayoutDetector {
     public static final Issue USELESS_PARENT = Issue.create(
             "UselessParent", //$NON-NLS-1$
             "Useless parent layout",
-            "Checks whether a parent layout can be removed.",
             "A layout with children that has no siblings, is not a scrollview or " +
             "a root layout, and does not have a background, can be removed and have " +
             "its children moved directly into the parent for a flatter and more " +
@@ -79,7 +85,6 @@ public class UselessViewDetector extends LayoutDetector {
     public static final Issue USELESS_LEAF = Issue.create(
             "UselessLeaf", //$NON-NLS-1$
             "Useless leaf layout",
-            "Checks whether a leaf layout can be removed.",
             "A layout that has no children or no background can often be removed (since it " +
             "is invisible) for a flatter and more efficient layout hierarchy.",
             Category.PERFORMANCE,
@@ -199,20 +204,32 @@ public class UselessViewDetector extends LayoutDetector {
             return;
         }
 
+        // If we define a padding, and the parent provides a background, then
+        // this view is not *necessarily* useless.
+        if (parentHasBackground && element.hasAttributeNS(ANDROID_URI, ATTR_PADDING)
+                || element.hasAttributeNS(ANDROID_URI, ATTR_PADDING_LEFT)
+                || element.hasAttributeNS(ANDROID_URI, ATTR_PADDING_RIGHT)
+                || element.hasAttributeNS(ANDROID_URI, ATTR_PADDING_TOP)
+                || element.hasAttributeNS(ANDROID_URI, ATTR_PADDING_BOTTOM)
+                || element.hasAttributeNS(ANDROID_URI, ATTR_PADDING_START)
+                || element.hasAttributeNS(ANDROID_URI, ATTR_PADDING_END)) {
+            return;
+        }
+
         boolean hasId = element.hasAttributeNS(ANDROID_URI, ATTR_ID);
         Location location = context.getLocation(element);
         String tag = element.getTagName();
         String format;
         if (hasId) {
-            format = "This %1$s layout or its %2$s parent is possibly useless";
+            format = "This `%1$s` layout or its `%2$s` parent is possibly useless";
         } else {
-            format = "This %1$s layout or its %2$s parent is useless";
+            format = "This `%1$s` layout or its `%2$s` parent is useless";
         }
         if (nodeHasBackground || parentHasBackground) {
-            format += "; transfer the background attribute to the other view";
+            format += "; transfer the `background` attribute to the other view";
         }
         String message = String.format(format, tag, parentTag);
-        context.report(USELESS_PARENT, element, location, message, null);
+        context.report(USELESS_PARENT, element, location, message);
     }
 
     // This is the old UselessView check from layoutopt
@@ -246,7 +263,7 @@ public class UselessViewDetector extends LayoutDetector {
         Location location = context.getLocation(element);
         String tag = element.getTagName();
         String message = String.format(
-                "This %1$s view is useless (no children, no background, no id, no style)", tag);
-        context.report(USELESS_LEAF, element, location, message, null);
+                "This `%1$s` view is useless (no children, no `background`, no `id`, no `style`)", tag);
+        context.report(USELESS_LEAF, element, location, message);
     }
 }

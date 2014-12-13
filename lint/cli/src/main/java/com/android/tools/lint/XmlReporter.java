@@ -16,7 +16,7 @@
 
 package com.android.tools.lint;
 
-import static com.android.tools.lint.detector.api.Issue.OutputFormat.RAW;
+import static com.android.tools.lint.detector.api.TextFormat.RAW;
 
 import com.android.tools.lint.checks.BuiltinIssueRegistry;
 import com.android.tools.lint.detector.api.Issue;
@@ -81,17 +81,14 @@ public class XmlReporter extends Reporter {
                         issue.getCategory().getFullName());
                 writeAttribute(mWriter, 2, "priority",                                //$NON-NLS-1$
                         Integer.toString(issue.getPriority()));
-                writeAttribute(mWriter, 2, "summary", issue.getDescription(RAW));     //$NON-NLS-1$
+                writeAttribute(mWriter, 2, "summary", issue.getBriefDescription(RAW));//$NON-NLS-1$
                 writeAttribute(mWriter, 2, "explanation", issue.getExplanation(RAW)); //$NON-NLS-1$
                 List<String> moreInfo = issue.getMoreInfo();
                 if (!moreInfo.isEmpty()) {
                     // Compatibility with old format: list first URL
-                    writeAttribute(mWriter, 2, "url", moreInfo.get(0));           //$NON-NLS-1$
-                    if (issue.getMoreInfo() != null) {
-                        writeAttribute(mWriter, 2, "urls",                            //$NON-NLS-1$
-                                Joiner.on(',').join(issue.getMoreInfo()));
-
-                    }
+                    writeAttribute(mWriter, 2, "url", moreInfo.get(0));               //$NON-NLS-1$
+                    writeAttribute(mWriter, 2, "urls",                                //$NON-NLS-1$
+                            Joiner.on(',').join(issue.getMoreInfo()));
                 }
                 if (warning.errorLine != null && !warning.errorLine.isEmpty()) {
                     String line = warning.errorLine;
@@ -102,14 +99,23 @@ public class XmlReporter extends Reporter {
                             String line1 = line.substring(0, index1);
                             String line2 = line.substring(index1 + 1, index2);
                             writeAttribute(mWriter, 2, "errorLine1", line1);          //$NON-NLS-1$
-                            writeAttribute(mWriter, 2, "errorLine2", line2);       //$NON-NLS-1$
+                            writeAttribute(mWriter, 2, "errorLine2", line2);          //$NON-NLS-1$
                         }
                     }
                 }
-                if (mClient.getRegistry() instanceof BuiltinIssueRegistry &&
-                        ((BuiltinIssueRegistry) mClient.getRegistry()).hasAutoFix(
-                                "adt", issue)) { //$NON-NLS-1$
-                    writeAttribute(mWriter, 2, "quickfix", "adt");      //$NON-NLS-1$ //$NON-NLS-2$
+
+                if (warning.isVariantSpecific()) {
+                    writeAttribute(mWriter, 2, "includedVariants", Joiner.on(',').join(warning.getIncludedVariantNames()));
+                    writeAttribute(mWriter, 2, "excludedVariants", Joiner.on(',').join(warning.getExcludedVariantNames()));
+                }
+
+                if (mClient.getRegistry() instanceof BuiltinIssueRegistry) {
+                    boolean adt = QuickfixHandler.ADT.hasAutoFix(issue);
+                    boolean studio = QuickfixHandler.STUDIO.hasAutoFix(issue);
+                    if (adt || studio) { //$NON-NLS-1$
+                        String value = adt && studio ? "studio,adt" : studio ? "studio" : "adt";
+                        writeAttribute(mWriter, 2, "quickfix", value);      //$NON-NLS-1$ //$NON-NLS-2$
+                    }
                 }
 
                 assert (warning.file != null) == (warning.location != null);
@@ -158,8 +164,11 @@ public class XmlReporter extends Reporter {
         mWriter.write("\n</issues>\n");       //$NON-NLS-1$
         mWriter.close();
 
-        String path = mOutput.getAbsolutePath();
-        System.out.println(String.format("Wrote XML report to %1$s", path));
+        if (!mClient.getFlags().isQuiet()
+                && (mDisplayEmpty || errorCount > 0 || warningCount > 0)) {
+            String path = mOutput.getAbsolutePath();
+            System.out.println(String.format("Wrote XML report to %1$s", path));
+        }
     }
 
     private static void writeAttribute(Writer writer, int indent, String name, String value)

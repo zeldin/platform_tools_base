@@ -5,9 +5,12 @@ import com.android.ide.common.rendering.api.ResourceValue;
 import com.android.ide.common.rendering.api.StyleResourceValue;
 import com.android.ide.common.resources.configuration.FolderConfiguration;
 import com.android.resources.ResourceType;
+import com.google.common.collect.Lists;
 
 import junit.framework.TestCase;
 
+import java.io.IOException;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -61,12 +64,14 @@ public class ResourceResolverTest extends TestCase {
                         + "<resources>\n"
                         + "    <style name=\"MyTheme\" parent=\"android:Theme.Light\">\n"
                         + "        <item name=\"android:textColor\">#999999</item>\n"
+                        + "        <item name=\"foo\">?android:colorForeground</item>\n"
                         + "    </style>\n"
                         + "    <style name=\"MyTheme.Dotted1\" parent=\"\">\n"
                         + "    </style>"
                         + "    <style name=\"MyTheme.Dotted2\">\n"
                         + "    </style>"
                         + "    <style name=\"RandomStyle\">\n"
+                        + "        <item name=\"android:text\">&#169; Copyright</item>\n"
                         + "    </style>"
                         + "    <style name=\"RandomStyle2\" parent=\"RandomStyle\">\n"
                         + "    </style>"
@@ -157,6 +162,11 @@ public class ResourceResolverTest extends TestCase {
         StyleResourceValue theme = resolver.getTheme("Theme", true);
         assertNotNull(theme);
 
+        // getParent
+        StyleResourceValue parent = resolver.getParent(myTheme);
+        assertNotNull(parent);
+        assertEquals("Theme.Light", parent.getName());
+
         // themeIsParentOf
         assertTrue(resolver.themeIsParentOf(themeLight, myTheme));
         assertFalse(resolver.themeIsParentOf(myTheme, themeLight));
@@ -174,6 +184,10 @@ public class ResourceResolverTest extends TestCase {
         // isTheme
         assertFalse(resolver.isTheme(resolver.findResValue("@style/RandomStyle", false), null));
         assertFalse(resolver.isTheme(resolver.findResValue("@style/RandomStyle2", false), null));
+        //    check XML escaping in value resources
+        StyleResourceValue randomStyle = (StyleResourceValue) resolver.findResValue(
+                "@style/RandomStyle", false);
+        assertEquals("\u00a9 Copyright", randomStyle.getItem("text", true).getValue());
         assertTrue(resolver.isTheme(resolver.findResValue("@style/MyTheme.Dotted2", false), null));
         assertFalse(resolver.isTheme(resolver.findResValue("@style/MyTheme.Dotted1", false),
                 null));
@@ -193,6 +207,11 @@ public class ResourceResolverTest extends TestCase {
         assertNotNull(resolver.findItemInTheme("colorForeground", true));
         assertEquals("@color/bright_foreground_light",
                 resolver.findItemInTheme("colorForeground", true).getValue());
+        assertEquals("@color/bright_foreground_light",
+                resolver.findResValue("?colorForeground", true).getValue());
+        ResourceValue target = new ResourceValue(ResourceType.STRING, "dummy", false);
+        target.setValue("?foo");
+        assertEquals("#ff000000", resolver.resolveResValue(target).getValue());
 
         // getFrameworkResource
         assertNull(resolver.getFrameworkResource(ResourceType.STRING, "show_all_apps"));
@@ -218,8 +237,17 @@ public class ResourceResolverTest extends TestCase {
                 resolver.resolveValue(ResourceType.STRING, "bright_foreground_dark",
                         "@android:color/background_light", true).getValue());
 
+        // themeExtends
+        assertTrue(resolver.themeExtends("@android:style/Theme", "@android:style/Theme"));
+        assertTrue(resolver.themeExtends("@android:style/Theme", "@android:style/Theme.Light"));
+        assertFalse(resolver.themeExtends("@android:style/Theme.Light", "@android:style/Theme"));
+        assertTrue(resolver.themeExtends("@style/MyTheme.Dotted2", "@style/MyTheme.Dotted2"));
+        assertTrue(resolver.themeExtends("@style/MyTheme", "@style/MyTheme.Dotted2"));
+        assertTrue(resolver.themeExtends("@android:style/Theme.Light", "@style/MyTheme.Dotted2"));
+        assertTrue(resolver.themeExtends("@android:style/Theme", "@style/MyTheme.Dotted2"));
+        assertFalse(resolver.themeExtends("@style/MyTheme.Dotted1", "@style/MyTheme.Dotted2"));
 
-        // Switch to MyTheme.Dotted1 (to make sure the parent="" inheritence works properly.)
+        // Switch to MyTheme.Dotted1 (to make sure the parent="" inheritance works properly.)
         // To do that we need to create a new resource resolver.
         resolver = ResourceResolver.create(projectResources, frameworkResources,
                 "MyTheme.Dotted1", true);
@@ -236,6 +264,19 @@ public class ResourceResolverTest extends TestCase {
         assertEquals("MyTheme.Dotted2", resolver.getThemeName());
         assertTrue(resolver.isProjectTheme());
         assertNotNull(resolver.findItemInTheme("colorForeground", true));
+
+        // Test recording resolver
+        List<ResourceValue> chain = Lists.newArrayList();
+        resolver = ResourceResolver.create(projectResources, frameworkResources, "MyTheme", true);
+        resolver = resolver.createRecorder(chain);
+        assertNotNull(resolver.findResValue("@android:color/bright_foreground_dark", true));
+        ResourceValue v = resolver.findResValue("@android:color/bright_foreground_dark", false);
+        chain.clear();
+        assertEquals("#ffffffff", resolver.resolveResValue(v).getValue());
+        assertEquals("@android:color/bright_foreground_dark => "
+                + "@android:color/background_light => #ffffffff",
+                ResourceItemResolver.getDisplayString("@android:color/bright_foreground_dark",
+                        chain));
 
         frameworkRepository.dispose();
         projectRepository.dispose();
@@ -331,5 +372,186 @@ public class ResourceResolverTest extends TestCase {
         assertTrue(wasWarned.get());
 
         projectRepository.dispose();
+    }
+
+    public void testParentCycle() throws IOException {
+        TestResourceRepository projectRepository = TestResourceRepository.create(false,
+                new Object[]{
+                        "values/styles.xml", ""
+                        + "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n"
+                        + "<resources>\n"
+                        + "    <style name=\"ButtonStyle.Base\">\n"
+                        + "        <item name=\"android:textColor\">#ff0000</item>\n"
+                        + "    </style>\n"
+                        + "    <style name=\"ButtonStyle\" parent=\"ButtonStyle.Base\">\n"
+                        + "        <item name=\"android:layout_height\">40dp</item>\n"
+                        + "    </style>\n"
+                        + "</resources>\n",
+
+                        "layouts/layout.xml", ""
+                        + "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n"
+                        + "<RelativeLayout xmlns:android=\"http://schemas.android.com/apk/res/android\"\n"
+                        + "    android:layout_width=\"match_parent\"\n"
+                        + "    android:layout_height=\"match_parent\">\n"
+                        + "\n"
+                        + "    <TextView\n"
+                        + "        style=\"@style/ButtonStyle\"\n"
+                        + "        android:layout_width=\"wrap_content\"\n"
+                        + "        android:layout_height=\"wrap_content\" />\n"
+                        + "\n"
+                        + "</RelativeLayout>\n",
+
+                });
+        assertFalse(projectRepository.isFrameworkRepository());
+        FolderConfiguration config = FolderConfiguration.getConfigForFolder("values-es-land");
+        assertNotNull(config);
+        Map<ResourceType, Map<String, ResourceValue>> projectResources =
+                projectRepository.getConfiguredResources(config);
+        assertNotNull(projectResources);
+        ResourceResolver resolver = ResourceResolver.create(projectResources, projectResources,
+                "ButtonStyle", true);
+        assertNotNull(resolver);
+
+        final AtomicBoolean wasWarned = new AtomicBoolean(false);
+        LayoutLog logger = new LayoutLog() {
+            @Override
+            public void error(String tag, String message, Object data) {
+                assertEquals("Cyclic style parent definitions: \"ButtonStyle\" specifies "
+                        + "parent \"ButtonStyle.Base\" implies parent \"ButtonStyle\"", message);
+                assertEquals(LayoutLog.TAG_BROKEN, tag);
+                wasWarned.set(true);
+            }
+        };
+        resolver.setLogger(logger);
+
+        StyleResourceValue buttonStyle = (StyleResourceValue) resolver.findResValue(
+                "@style/ButtonStyle", false);
+        ResourceValue textColor = resolver.findItemInStyle(buttonStyle, "textColor", true);
+        assertNotNull(textColor);
+        assertEquals("#ff0000", textColor.getValue());
+        assertFalse(wasWarned.get());
+        ResourceValue missing = resolver.findItemInStyle(buttonStyle, "missing", true);
+        assertNull(missing);
+        assertTrue(wasWarned.get());
+
+        projectRepository.dispose();
+    }
+
+    public void testSetDeviceDefaults() throws Exception {
+        TestResourceRepository frameworkRepository = TestResourceRepository.create(true,
+            new Object[] {
+                "values/themes.xml", ""
+                + "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n"
+                + "<resources>\n"
+                + "    <style name=\"Theme.Light\" parent=\"\">\n"
+                + "         <item name=\"android:textColor\">#ff0000</item>\n"
+                + "    </style>\n"
+                + "    <style name=\"Theme.Holo.Light\" parent=\"Theme.Light\">\n"
+                + "         <item name=\"android:textColor\">#00ff00</item>\n"
+                + "    </style>\n"
+                + "    <style name=\"Theme.DeviceDefault.Light\" parent=\"Theme.Holo.Light\"/>\n"
+                + "    <style name=\"Theme\" parent=\"\">\n"
+                + "         <item name=\"android:textColor\">#000000</item>\n"
+                + "    </style>\n"
+                + "    <style name=\"Theme.Holo\" parent=\"Theme\">\n"
+                + "         <item name=\"android:textColor\">#0000ff</item>\n"
+                + "    </style>\n"
+                + "    <style name=\"Theme.DeviceDefault\" parent=\"Theme.Holo\"/>\n"
+                + "</resources>\n",
+        });
+
+        TestResourceRepository projectRepository = TestResourceRepository.create(false,
+            new Object[] {
+                "values/themes.xml", ""
+                + "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n"
+                + "<resources>\n"
+                + "    <style name=\"AppTheme\" parent=\"android:Theme.DeviceDefault.Light\"/>\n"
+                + "    <style name=\"AppTheme.Dark\" parent=\"android:Theme.DeviceDefault\"/>\n"
+                + "</resources>\n"
+        });
+
+        assertFalse(projectRepository.isFrameworkRepository());
+        FolderConfiguration config = FolderConfiguration.getConfigForFolder("values-es-land");
+        assertNotNull(config);
+        Map<ResourceType, Map<String, ResourceValue>> projectResources = projectRepository
+                .getConfiguredResources(config);
+        Map<ResourceType, Map<String, ResourceValue>> frameworkResources = frameworkRepository
+                .getConfiguredResources(config);
+        assertNotNull(projectResources);
+        ResourceResolver lightResolver = ResourceResolver.create(projectResources,
+                frameworkResources, "AppTheme", true);
+        assertNotNull(lightResolver);
+        ResourceValue textColor = lightResolver.findItemInTheme("textColor", true);
+        assertNotNull(textColor);
+        assertEquals("#00ff00", textColor.getValue());
+
+        lightResolver.setDeviceDefaults("Theme.Light", null);
+        textColor = lightResolver.findItemInTheme("textColor", true);
+        assertNotNull(textColor);
+        assertEquals("#ff0000", textColor.getValue());
+
+        ResourceResolver darkResolver = ResourceResolver.create(projectResources,
+                frameworkResources, "AppTheme.Dark", true);
+        assertNotNull(darkResolver);
+        textColor = darkResolver.findItemInTheme("textColor", true);
+        assertNotNull(textColor);
+        assertEquals("#0000ff", textColor.getValue());
+
+        darkResolver.setDeviceDefaults("Theme.Light", "Theme");
+        textColor = darkResolver.findItemInTheme("textColor", true);
+        assertNotNull(textColor);
+        assertEquals("#000000", textColor.getValue());
+    }
+
+    public void testCycle() throws Exception {
+        TestResourceRepository frameworkRepository = TestResourceRepository.create(true,
+                new Object[] {
+                        "values/themes.xml", ""
+                        + "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n"
+                        + "<resources>\n"
+                        + "    <style name=\"Theme.DeviceDefault.Light\"/>\n"
+                        + "</resources>\n",
+                });
+
+        TestResourceRepository projectRepository = TestResourceRepository.create(false,
+                new Object[] {
+                        "values/themes.xml", ""
+                        + "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n"
+                        + "<resources>\n"
+                        + "    <style name=\"AppTheme\" parent=\"android:Theme.DeviceDefault.Light\"/>\n"
+                        + "    <style name=\"AppTheme.Dark\" parent=\"android:Theme.DeviceDefault\"/>\n"
+                        + "    <style name=\"foo\" parent=\"bar\"/>\n"
+                        + "    <style name=\"bar\" parent=\"foo\"/>\n"
+                        + "</resources>\n"
+                });
+
+        assertFalse(projectRepository.isFrameworkRepository());
+        FolderConfiguration config = FolderConfiguration.getConfigForFolder("values");
+        assertNotNull(config);
+        Map<ResourceType, Map<String, ResourceValue>> projectResources = projectRepository
+                .getConfiguredResources(config);
+        Map<ResourceType, Map<String, ResourceValue>> frameworkResources = frameworkRepository
+                .getConfiguredResources(config);
+        assertNotNull(projectResources);
+        ResourceResolver resolver = ResourceResolver.create(projectResources,
+                frameworkResources, "AppTheme", true);
+
+        final AtomicBoolean wasWarned = new AtomicBoolean(false);
+        LayoutLog logger = new LayoutLog() {
+            @Override
+            public void error(String tag, String message, Object data) {
+                if ("Cyclic style parent definitions: \"foo\" specifies parent \"bar\" specifies parent \"foo\"".equals(message)) {
+                    wasWarned.set(true);
+                } else {
+                    fail(message);
+                }
+            }
+        };
+        resolver.setLogger(logger);
+        assertFalse(resolver.isTheme(resolver.findResValue("@style/foo", false), null));
+        assertTrue(wasWarned.get());
+
+        projectRepository.dispose();
+
     }
 }

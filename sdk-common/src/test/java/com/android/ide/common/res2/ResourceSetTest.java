@@ -27,7 +27,7 @@ public class ResourceSetTest extends BaseTestCase {
 
     public void testBaseResourceSetByCount() throws Exception {
         ResourceSet resourceSet = getBaseResourceSet();
-        assertEquals(25, resourceSet.size());
+        assertEquals(29, resourceSet.size());
     }
 
     public void testBaseResourceSetByName() throws Exception {
@@ -55,10 +55,13 @@ public class ResourceSetTest extends BaseTestCase {
                 "attr/flag_attr",
                 "attr/blah",
                 "attr/blah2",
+                "attr/flagAttr",
                 "declare-styleable/declare_styleable",
                 "dimen/dimen",
+                "dimen-sw600dp-v13/offset",
                 "id/item_id",
-                "integer/integer"
+                "integer/integer",
+                "plurals/plurals"
         );
     }
 

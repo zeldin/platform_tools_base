@@ -22,12 +22,16 @@ import static com.android.SdkConstants.ATTR_LAYOUT;
 import static com.android.SdkConstants.ATTR_LAYOUT_ABOVE;
 import static com.android.SdkConstants.ATTR_LAYOUT_ALIGN_BASELINE;
 import static com.android.SdkConstants.ATTR_LAYOUT_ALIGN_BOTTOM;
+import static com.android.SdkConstants.ATTR_LAYOUT_ALIGN_END;
 import static com.android.SdkConstants.ATTR_LAYOUT_ALIGN_LEFT;
 import static com.android.SdkConstants.ATTR_LAYOUT_ALIGN_PARENT_BOTTOM;
+import static com.android.SdkConstants.ATTR_LAYOUT_ALIGN_PARENT_END;
 import static com.android.SdkConstants.ATTR_LAYOUT_ALIGN_PARENT_LEFT;
 import static com.android.SdkConstants.ATTR_LAYOUT_ALIGN_PARENT_RIGHT;
+import static com.android.SdkConstants.ATTR_LAYOUT_ALIGN_PARENT_START;
 import static com.android.SdkConstants.ATTR_LAYOUT_ALIGN_PARENT_TOP;
 import static com.android.SdkConstants.ATTR_LAYOUT_ALIGN_RIGHT;
+import static com.android.SdkConstants.ATTR_LAYOUT_ALIGN_START;
 import static com.android.SdkConstants.ATTR_LAYOUT_ALIGN_TOP;
 import static com.android.SdkConstants.ATTR_LAYOUT_ALIGN_WITH_PARENT_MISSING;
 import static com.android.SdkConstants.ATTR_LAYOUT_BELOW;
@@ -40,15 +44,19 @@ import static com.android.SdkConstants.ATTR_LAYOUT_GRAVITY;
 import static com.android.SdkConstants.ATTR_LAYOUT_HEIGHT;
 import static com.android.SdkConstants.ATTR_LAYOUT_MARGIN;
 import static com.android.SdkConstants.ATTR_LAYOUT_MARGIN_BOTTOM;
+import static com.android.SdkConstants.ATTR_LAYOUT_MARGIN_END;
 import static com.android.SdkConstants.ATTR_LAYOUT_MARGIN_LEFT;
 import static com.android.SdkConstants.ATTR_LAYOUT_MARGIN_RIGHT;
+import static com.android.SdkConstants.ATTR_LAYOUT_MARGIN_START;
 import static com.android.SdkConstants.ATTR_LAYOUT_MARGIN_TOP;
 import static com.android.SdkConstants.ATTR_LAYOUT_RESOURCE_PREFIX;
 import static com.android.SdkConstants.ATTR_LAYOUT_ROW;
 import static com.android.SdkConstants.ATTR_LAYOUT_ROW_SPAN;
 import static com.android.SdkConstants.ATTR_LAYOUT_SPAN;
+import static com.android.SdkConstants.ATTR_LAYOUT_TO_END_OF;
 import static com.android.SdkConstants.ATTR_LAYOUT_TO_LEFT_OF;
 import static com.android.SdkConstants.ATTR_LAYOUT_TO_RIGHT_OF;
+import static com.android.SdkConstants.ATTR_LAYOUT_TO_START_OF;
 import static com.android.SdkConstants.ATTR_LAYOUT_WEIGHT;
 import static com.android.SdkConstants.ATTR_LAYOUT_WIDTH;
 import static com.android.SdkConstants.ATTR_LAYOUT_X;
@@ -64,7 +72,6 @@ import static com.android.SdkConstants.VIEW_MERGE;
 import static com.android.SdkConstants.VIEW_TAG;
 
 import com.android.annotations.NonNull;
-import com.android.tools.lint.client.api.IDomParser;
 import com.android.tools.lint.client.api.SdkInfo;
 import com.android.tools.lint.detector.api.Category;
 import com.android.tools.lint.detector.api.Context;
@@ -103,7 +110,6 @@ public class ObsoleteLayoutParamsDetector extends LayoutDetector {
     public static final Issue ISSUE = Issue.create(
             "ObsoleteLayoutParam", //$NON-NLS-1$
             "Obsolete layout params",
-            "Looks for layout params that are not valid for the given parent layout",
 
             "The given layout_param is not defined for the given layout, meaning it has no " +
             "effect. This usually happens when you change the parent layout or move view " +
@@ -148,7 +154,9 @@ public class ObsoleteLayoutParamsDetector extends LayoutDetector {
 
         // From ViewGroup.MarginLayoutParams
         VALID.add(ATTR_LAYOUT_MARGIN_LEFT);
+        VALID.add(ATTR_LAYOUT_MARGIN_START);
         VALID.add(ATTR_LAYOUT_MARGIN_RIGHT);
+        VALID.add(ATTR_LAYOUT_MARGIN_END);
         VALID.add(ATTR_LAYOUT_MARGIN_TOP);
         VALID.add(ATTR_LAYOUT_MARGIN_BOTTOM);
         VALID.add(ATTR_LAYOUT_MARGIN);
@@ -179,20 +187,26 @@ public class ObsoleteLayoutParamsDetector extends LayoutDetector {
 
         // Relative Layout
         PARAM_TO_VIEW.put(ATTR_LAYOUT_ALIGN_LEFT, RELATIVE_LAYOUT);
+        PARAM_TO_VIEW.put(ATTR_LAYOUT_ALIGN_START, RELATIVE_LAYOUT);
         PARAM_TO_VIEW.put(ATTR_LAYOUT_ALIGN_RIGHT, RELATIVE_LAYOUT);
+        PARAM_TO_VIEW.put(ATTR_LAYOUT_ALIGN_END, RELATIVE_LAYOUT);
         PARAM_TO_VIEW.put(ATTR_LAYOUT_ALIGN_TOP, RELATIVE_LAYOUT);
         PARAM_TO_VIEW.put(ATTR_LAYOUT_ALIGN_BOTTOM, RELATIVE_LAYOUT);
         PARAM_TO_VIEW.put(ATTR_LAYOUT_ALIGN_PARENT_TOP, RELATIVE_LAYOUT);
         PARAM_TO_VIEW.put(ATTR_LAYOUT_ALIGN_PARENT_BOTTOM, RELATIVE_LAYOUT);
         PARAM_TO_VIEW.put(ATTR_LAYOUT_ALIGN_PARENT_LEFT, RELATIVE_LAYOUT);
+        PARAM_TO_VIEW.put(ATTR_LAYOUT_ALIGN_PARENT_START, RELATIVE_LAYOUT);
         PARAM_TO_VIEW.put(ATTR_LAYOUT_ALIGN_PARENT_RIGHT, RELATIVE_LAYOUT);
+        PARAM_TO_VIEW.put(ATTR_LAYOUT_ALIGN_PARENT_END, RELATIVE_LAYOUT);
         PARAM_TO_VIEW.put(ATTR_LAYOUT_ALIGN_WITH_PARENT_MISSING, RELATIVE_LAYOUT);
         PARAM_TO_VIEW.put(ATTR_LAYOUT_ALIGN_BASELINE, RELATIVE_LAYOUT);
         PARAM_TO_VIEW.put(ATTR_LAYOUT_CENTER_IN_PARENT, RELATIVE_LAYOUT);
         PARAM_TO_VIEW.put(ATTR_LAYOUT_CENTER_VERTICAL, RELATIVE_LAYOUT);
         PARAM_TO_VIEW.put(ATTR_LAYOUT_CENTER_HORIZONTAL, RELATIVE_LAYOUT);
         PARAM_TO_VIEW.put(ATTR_LAYOUT_TO_RIGHT_OF, RELATIVE_LAYOUT);
+        PARAM_TO_VIEW.put(ATTR_LAYOUT_TO_END_OF, RELATIVE_LAYOUT);
         PARAM_TO_VIEW.put(ATTR_LAYOUT_TO_LEFT_OF, RELATIVE_LAYOUT);
+        PARAM_TO_VIEW.put(ATTR_LAYOUT_TO_START_OF, RELATIVE_LAYOUT);
         PARAM_TO_VIEW.put(ATTR_LAYOUT_BELOW, RELATIVE_LAYOUT);
         PARAM_TO_VIEW.put(ATTR_LAYOUT_ABOVE, RELATIVE_LAYOUT);
     }
@@ -258,8 +272,7 @@ public class ObsoleteLayoutParamsDetector extends LayoutDetector {
                     // We can't do that yet since we may be processing the include tag to
                     // this layout after the layout itself. Instead, stash a work order...
                     if (context.getScope().contains(Scope.ALL_RESOURCE_FILES)) {
-                        IDomParser parser = context.parser;
-                        Location.Handle handle = parser.createLocationHandle(context, attribute);
+                        Location.Handle handle = context.createLocationHandle(attribute);
                         handle.setClientData(attribute);
                         mPending.add(Pair.of(name, handle));
                     }
@@ -273,8 +286,7 @@ public class ObsoleteLayoutParamsDetector extends LayoutDetector {
                     // wherever they are. This has to be done after all the files have been
                     // scanned since we are not processing the files in any particular order.
                     if (context.getScope().contains(Scope.ALL_RESOURCE_FILES)) {
-                        IDomParser parser = context.parser;
-                        Location.Handle handle = parser.createLocationHandle(context, attribute);
+                        Location.Handle handle = context.createLocationHandle(attribute);
                         handle.setClientData(attribute);
                         mPending.add(Pair.of(name, handle));
                     }
@@ -288,8 +300,7 @@ public class ObsoleteLayoutParamsDetector extends LayoutDetector {
                         return;
                     }
                     context.report(ISSUE, attribute, context.getLocation(attribute),
-                            String.format("Invalid layout param in a %1$s: %2$s", parentTag, name),
-                            null);
+                            String.format("Invalid layout param in a `%1$s`: `%2$s`", parentTag, name));
                 }
             } else {
                 // We could warn about unknown layout params but this might be brittle if
@@ -373,7 +384,7 @@ public class ObsoleteLayoutParamsDetector extends LayoutDetector {
             if (!isValid) {
                 Object clientData = handle.getClientData();
                 if (clientData instanceof Node) {
-                    if (context.getDriver().isSuppressed(ISSUE, (Node) clientData)) {
+                    if (context.getDriver().isSuppressed(null, ISSUE, (Node) clientData)) {
                         return;
                     }
                 }
@@ -385,14 +396,14 @@ public class ObsoleteLayoutParamsDetector extends LayoutDetector {
                     }
                     File from = include.getFirst();
                     String parentTag = include.getSecond();
-                    sb.append(String.format("included from within a %1$s in %2$s",
+                    sb.append(String.format("included from within a `%1$s` in `%2$s`",
                             parentTag,
                             from.getParentFile().getName() + File.separator + from.getName()));
                 }
-                String message = String.format("Invalid layout param '%1$s' (%2$s)",
+                String message = String.format("Invalid layout param '`%1$s`' (%2$s)",
                             name, sb.toString());
                 // TODO: Compute applicable scope node
-                context.report(ISSUE, location, message, null);
+                context.report(ISSUE, location, message);
             }
         }
     }

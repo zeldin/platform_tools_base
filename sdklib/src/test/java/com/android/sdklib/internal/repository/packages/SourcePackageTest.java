@@ -19,21 +19,12 @@ package com.android.sdklib.internal.repository.packages;
 import com.android.sdklib.AndroidVersion;
 import com.android.sdklib.AndroidVersion.AndroidVersionException;
 import com.android.sdklib.internal.repository.archives.Archive;
-import com.android.sdklib.internal.repository.archives.Archive.Arch;
-import com.android.sdklib.internal.repository.archives.Archive.Os;
-import com.android.sdklib.internal.repository.packages.SourcePackage;
 import com.android.sdklib.repository.PkgProps;
 
 import java.util.Properties;
 
 public class SourcePackageTest extends PackageTest {
 
-    /**
-     * SourcePackageTest implicitly generates a local archive wrapper
-     * that matches the current platform OS and architecture. Since this
-     * is not convenient for testing, this class overrides it to always
-     * create archives for any OS and any architecture.
-     */
     private static class SourcePackageFakeArchive extends SourcePackage {
         protected SourcePackageFakeArchive(
                 AndroidVersion platformVersion,
@@ -48,12 +39,8 @@ public class SourcePackageTest extends PackageTest {
         @Override
         protected Archive[] initializeArchives(
                 Properties props,
-                Os archiveOs,
-                Arch archiveArch,
                 String archiveOsPath) {
-            assert archiveOs == Os.getCurrentOs();
-            assert archiveArch == Arch.getCurrentArch();
-            return super.initializeArchives(props, Os.ANY, Arch.ANY, LOCAL_ARCHIVE_PATH);
+            return super.initializeArchives(props, LOCAL_ARCHIVE_PATH);
         }
     }
 
@@ -66,8 +53,8 @@ public class SourcePackageTest extends PackageTest {
     }
 
     @Override
-    protected Properties createProps() {
-        Properties props = super.createProps();
+    protected Properties createExpectedProps() {
+        Properties props = super.createExpectedProps();
 
         // SourcePackageTest properties
         props.setProperty(PkgProps.VERSION_API_LEVEL, "5");
@@ -86,7 +73,7 @@ public class SourcePackageTest extends PackageTest {
 
     @Override
     public final void testCreate() throws Exception {
-        Properties props = createProps();
+        Properties props = createExpectedProps();
         SourcePackage p = createSourcePackageTest(props);
 
         testCreatedSourcePackageTest(p);
@@ -94,17 +81,17 @@ public class SourcePackageTest extends PackageTest {
 
     @Override
     public void testSaveProperties() throws Exception {
-        Properties props = createProps();
-        SourcePackage p = createSourcePackageTest(props);
+        Properties expected = createExpectedProps();
+        SourcePackage p = createSourcePackageTest(expected);
 
-        Properties props2 = new Properties();
-        p.saveProperties(props2);
+        Properties actual = new Properties();
+        p.saveProperties(actual);
 
-        assertEquals(props2, props);
+        assertEquals(expected, actual);
     }
 
     public void testSameItemAs() throws Exception {
-        Properties props1 = createProps();
+        Properties props1 = createExpectedProps();
         SourcePackage p1 = createSourcePackageTest(props1);
         assertTrue(p1.sameItemAs(p1));
 
@@ -117,7 +104,7 @@ public class SourcePackageTest extends PackageTest {
     }
 
     public void testInstallId() throws Exception {
-        Properties props = createProps();
+        Properties props = createExpectedProps();
         SourcePackage p = createSourcePackageTest(props);
 
         assertEquals("source-5", p.installId());

@@ -3,10 +3,10 @@ package ${packageName};
 import android.app.Activity;
 import android.os.Bundle;
 <#if switchGrid == true>
-import android.support.v4.app.Fragment;
+import android${SupportPackage}.app.Fragment;
 import android.view.LayoutInflater;
 <#else>
-import android.support.v4.app.ListFragment;
+import android${SupportPackage}.app.ListFragment;
 </#if>
 import android.view.View;
 <#if switchGrid == true>
@@ -21,6 +21,7 @@ import android.widget.TextView;
 <#else>
 import android.widget.ListView;
 </#if>
+<#if applicationPackage??>import ${applicationPackage}.R;</#if>
 
 import ${packageName}.dummy.DummyContent;
 
@@ -32,7 +33,7 @@ import ${packageName}.dummy.DummyContent;
  * with a GridView.
 </#if>
  * <p />
- * Activities containing this fragment MUST implement the {@link Callbacks}
+ * Activities containing this fragment MUST implement the {@link OnFragmentInteractionListener}
  * interface.
  */
 <#if switchGrid == true>
@@ -160,7 +161,7 @@ public class ${className} extends ListFragment {
     public void setEmptyText(CharSequence emptyText) {
         View emptyView = mListView.getEmptyView();
 
-        if (emptyText instanceof TextView) {
+        if (emptyView instanceof TextView) {
             ((TextView) emptyView).setText(emptyText);
         }
     }

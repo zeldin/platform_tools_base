@@ -27,6 +27,7 @@ import java.util.Collections;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Stack;
+import java.util.concurrent.TimeUnit;
 
 public class Call {
     private final long mMethodId;
@@ -42,6 +43,7 @@ public class Call {
     private final int mExitThreadTime;
 
     private final long mInclusiveThreadTimeInCallees;
+    private final long mInclusiveGlobalTimeInCallees;
 
     private final int mDepth;
 
@@ -77,13 +79,14 @@ public class Call {
             mCallees = new ImmutableList.Builder<Call>().addAll(callees).build();
         }
 
-        mInclusiveThreadTimeInCallees = sumThreadTimes(mCallees);
+        mInclusiveThreadTimeInCallees = sumInclusiveTimes(mCallees, ClockType.THREAD);
+        mInclusiveGlobalTimeInCallees = sumInclusiveTimes(mCallees, ClockType.GLOBAL);
     }
 
-    private long sumThreadTimes(@NonNull List<Call> callees) {
+    private long sumInclusiveTimes(@NonNull List<Call> callees, ClockType clockType) {
         long sum = 0;
         for (Call c : callees) {
-            sum += c.getInclusiveThreadTime();
+            sum += c.getInclusiveTime(clockType, TimeUnit.MICROSECONDS);
         }
         return sum;
     }
@@ -109,32 +112,31 @@ public class Call {
         return mIsRecursive;
     }
 
-    public long getEntryThreadTime() {
-        return UnsignedInts.toLong(mEntryThreadTime);
+    public long getEntryTime(ClockType clockType, TimeUnit units) {
+        long entryTime = clockType == ClockType.THREAD ?
+                UnsignedInts.toLong(mEntryThreadTime) : UnsignedInts.toLong(mEntryGlobalTime);
+        return units.convert(entryTime, VmTraceData.getDefaultTimeUnits());
     }
 
-    public long getExitThreadTime() {
-        return UnsignedInts.toLong(mExitThreadTime);
+    public long getExitTime(ClockType clockType, TimeUnit units) {
+        long exitTime = clockType == ClockType.THREAD ?
+                UnsignedInts.toLong(mExitThreadTime) : UnsignedInts.toLong(mExitGlobalTime);
+        return units.convert(exitTime, VmTraceData.getDefaultTimeUnits());
     }
 
-    public long getEntryGlobalTime() {
-        return UnsignedInts.toLong(mEntryGlobalTime);
+    public long getInclusiveTime(ClockType clockType, TimeUnit units) {
+        long inclusiveTime = clockType == ClockType.THREAD ?
+                UnsignedInts.toLong(mExitThreadTime - mEntryThreadTime) :
+                UnsignedInts.toLong(mExitGlobalTime - mEntryGlobalTime);
+        return units.convert(inclusiveTime, VmTraceData.getDefaultTimeUnits());
     }
 
-    public long getExitGlobalTime() {
-        return UnsignedInts.toLong(mExitGlobalTime);
-    }
-
-    public long getInclusiveThreadTime() {
-        return UnsignedInts.toLong(mExitThreadTime - mEntryThreadTime);
-    }
-
-    public long getInclusiveGlobalTime() {
-        return UnsignedInts.toLong(mExitGlobalTime - mEntryGlobalTime);
-    }
-
-    public long getExclusiveThreadTime() {
-        return getInclusiveThreadTime() - mInclusiveThreadTimeInCallees;
+    public long getExclusiveTime(ClockType clockType, TimeUnit units) {
+        long inclusiveTimeInCallees = clockType == ClockType.THREAD ?
+                mInclusiveThreadTimeInCallees : mInclusiveGlobalTimeInCallees;
+        long exclusiveTime = getInclusiveTime(clockType, VmTraceData.getDefaultTimeUnits()) -
+                inclusiveTimeInCallees;
+        return units.convert(exclusiveTime, VmTraceData.getDefaultTimeUnits());
     }
 
     public static class Builder {

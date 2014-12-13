@@ -73,13 +73,12 @@ public class ManifestTypoDetector extends Detector implements Detector.XmlScanne
     public static final Issue ISSUE = Issue.create(
             "ManifestTypo", //$NON-NLS-1$
             "Typos in manifest tags",
-            "Checks for manifest typos",
 
             "This check looks through the manifest, and if it finds any tags " +
             "that look like likely misspellings, they are flagged.",
             Category.CORRECTNESS,
             5,
-            Severity.WARNING,
+            Severity.FATAL,
             new Implementation(
                     ManifestTypoDetector.class,
                     Scope.MANIFEST_SCOPE));
@@ -175,10 +174,10 @@ public class ManifestTypoDetector extends Detector implements Detector.XmlScanne
                 } else {
                     suggestionString = LintUtils.formatList(suggestions, -1);
                 }
-                String message = String.format("Misspelled tag <%1$s>: Did you mean %2$s ?",
+                String message = String.format("Misspelled tag `<%1$s>`: Did you mean `%2$s` ?",
                         tag, suggestionString);
                 context.report(ISSUE, element, context.getLocation(element),
-                        message, null);
+                        message);
             }
         }
     }

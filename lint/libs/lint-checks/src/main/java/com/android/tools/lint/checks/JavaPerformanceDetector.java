@@ -16,7 +16,12 @@
 
 package com.android.tools.lint.checks;
 
+import static com.android.SdkConstants.SUPPORT_LIB_ARTIFACT;
+import static com.android.tools.lint.client.api.JavaParser.TYPE_BOOLEAN;
+import static com.android.tools.lint.client.api.JavaParser.TYPE_INT;
+
 import com.android.annotations.NonNull;
+import com.android.annotations.Nullable;
 import com.android.tools.lint.detector.api.Category;
 import com.android.tools.lint.detector.api.Context;
 import com.android.tools.lint.detector.api.Detector;
@@ -26,6 +31,7 @@ import com.android.tools.lint.detector.api.JavaContext;
 import com.android.tools.lint.detector.api.Scope;
 import com.android.tools.lint.detector.api.Severity;
 import com.android.tools.lint.detector.api.Speed;
+import com.android.tools.lint.detector.api.TextFormat;
 import com.google.common.collect.Sets;
 import com.google.common.collect.Sets.SetView;
 
@@ -70,7 +76,6 @@ public class JavaPerformanceDetector extends Detector implements Detector.JavaSc
     public static final Issue PAINT_ALLOC = Issue.create(
             "DrawAllocation", //$NON-NLS-1$
             "Memory allocations within drawing code",
-            "Looks for memory allocations within drawing code",
 
             "You should avoid allocating objects during a drawing or layout operation. These " +
             "are called frequently, so a smooth UI can be interrupted by garbage collection " +
@@ -91,7 +96,6 @@ public class JavaPerformanceDetector extends Detector implements Detector.JavaSc
     public static final Issue USE_SPARSE_ARRAY = Issue.create(
             "UseSparseArrays", //$NON-NLS-1$
             "HashMap can be replaced with SparseArray",
-            "Looks for opportunities to replace HashMaps with the more efficient SparseArray",
 
             "For maps where the keys are of type integer, it's typically more efficient to " +
             "use the Android `SparseArray` API. This check identifies scenarios where you might " +
@@ -114,7 +118,6 @@ public class JavaPerformanceDetector extends Detector implements Detector.JavaSc
     public static final Issue USE_VALUE_OF = Issue.create(
             "UseValueOf", //$NON-NLS-1$
             "Should use `valueOf` instead of `new`",
-            "Looks for usages of `new` for wrapper classes which should use `valueOf` instead",
 
             "You should not call the constructor for wrapper classes directly, such as" +
             "`new Integer(42)`. Instead, call the `valueOf` factory method, such as " +
@@ -129,10 +132,9 @@ public class JavaPerformanceDetector extends Detector implements Detector.JavaSc
     static final String ON_MEASURE = "onMeasure";                           //$NON-NLS-1$
     static final String ON_DRAW = "onDraw";                                 //$NON-NLS-1$
     static final String ON_LAYOUT = "onLayout";                             //$NON-NLS-1$
-    private static final String INT = "int";                                //$NON-NLS-1$
     private static final String INTEGER = "Integer";                        //$NON-NLS-1$
-    private static final String BOOL = "boolean";                           //$NON-NLS-1$
     private static final String BOOLEAN = "Boolean";                        //$NON-NLS-1$
+    private static final String BYTE = "Byte";                              //$NON-NLS-1$
     private static final String LONG = "Long";                              //$NON-NLS-1$
     private static final String CHARACTER = "Character";                    //$NON-NLS-1$
     private static final String DOUBLE = "Double";                          //$NON-NLS-1$
@@ -222,13 +224,13 @@ public class JavaPerformanceDetector extends Detector implements Detector.JavaSc
                         || typeName.equals(FLOAT)
                         || typeName.equals(CHARACTER)
                         || typeName.equals(LONG)
-                        || typeName.equals(DOUBLE))
+                        || typeName.equals(DOUBLE)
+                        || typeName.equals(BYTE))
                         && node.astTypeReference().astParts().size() == 1
                         && node.astArguments().size() == 1) {
                     String argument = node.astArguments().first().toString();
-                    mContext.report(USE_VALUE_OF, node, mContext.getLocation(node),
-                            String.format("Use %1$s.valueOf(%2$s) instead", typeName, argument),
-                            null);
+                    mContext.report(USE_VALUE_OF, node, mContext.getLocation(node), getUseValueOfErrorMessage(
+                            typeName, argument));
                 }
             }
 
@@ -255,7 +257,7 @@ public class JavaPerformanceDetector extends Detector implements Detector.JavaSc
         private void reportAllocation(Node node) {
             mContext.report(PAINT_ALLOC, node, mContext.getLocation(node),
                 "Avoid object allocations during draw/layout operations (preallocate and " +
-                "reuse instead)", null);
+                "reuse instead)");
         }
 
         @Override
@@ -285,8 +287,8 @@ public class JavaPerformanceDetector extends Detector implements Detector.JavaSc
                     if (node.astArguments().isEmpty()) {
                         mContext.report(PAINT_ALLOC, node, mContext.getLocation(node),
                                 "Avoid object allocations during draw operations: Use " +
-                                "Canvas.getClipBounds(Rect) instead of Canvas.getClipBounds() " +
-                                "which allocates a temporary Rect", null);
+                                "`Canvas.getClipBounds(Rect)` instead of `Canvas.getClipBounds()` " +
+                                "which allocates a temporary `Rect`");
                     }
                 }
             }
@@ -419,12 +421,12 @@ public class JavaPerformanceDetector extends Detector implements Detector.JavaSc
 
                     // Ensure that the argument list matches boolean, int, int, int, int
                     TypeReferencePart type = iterator.next().astTypeReference().astParts().last();
-                    if (!type.getTypeName().equals(BOOL) || !iterator.hasNext()) {
+                    if (!type.getTypeName().equals(TYPE_BOOLEAN) || !iterator.hasNext()) {
                         return false;
                     }
                     for (int i = 0; i < 4; i++) {
                         type = iterator.next().astTypeReference().astParts().last();
-                        if (!type.getTypeName().equals(INT)) {
+                        if (!type.getTypeName().equals(TYPE_INT)) {
                             return false;
                         }
                         if (!iterator.hasNext()) {
@@ -450,7 +452,8 @@ public class JavaPerformanceDetector extends Detector implements Detector.JavaSc
                     VariableDefinition arg1 = parameters.last();
                     TypeReferencePart type1 = arg0.astTypeReference().astParts().last();
                     TypeReferencePart type2 = arg1.astTypeReference().astParts().last();
-                    return INT.equals(type1.getTypeName()) && INT.equals(type2.getTypeName());
+                    return TYPE_INT.equals(type1.getTypeName())
+                            && TYPE_INT.equals(type2.getTypeName());
                 }
             }
 
@@ -473,7 +476,7 @@ public class JavaPerformanceDetector extends Detector implements Detector.JavaSc
                         }
                         VariableDefinition next = iterator.next();
                         TypeReferencePart type = next.astTypeReference().astParts().last();
-                        if (!INT.equals(type.getTypeName())) {
+                        if (!TYPE_INT.equals(type.getTypeName())) {
                             return false;
                         }
                     }
@@ -496,28 +499,33 @@ public class JavaPerformanceDetector extends Detector implements Detector.JavaSc
             if (types != null && types.size() == 2) {
                 TypeReference first = types.first();
                 String typeName = first.getTypeName();
-                if (typeName.equals(INTEGER)) {
+                int minSdk = mContext.getMainProject().getMinSdk();
+                if (typeName.equals(INTEGER) || typeName.equals(BYTE)) {
                     String valueType = types.last().getTypeName();
                     if (valueType.equals(INTEGER)) {
                         mContext.report(USE_SPARSE_ARRAY, node, mContext.getLocation(node),
-                            "Use new SparseIntArray(...) instead for better performance",
-                            null);
+                            "Use new `SparseIntArray(...)` instead for better performance");
+                    } else if (valueType.equals(LONG) && minSdk >= 18) {
+                        mContext.report(USE_SPARSE_ARRAY, node, mContext.getLocation(node),
+                                "Use `new SparseLongArray(...)` instead for better performance");
                     } else if (valueType.equals(BOOLEAN)) {
                         mContext.report(USE_SPARSE_ARRAY, node, mContext.getLocation(node),
-                                "Use new SparseBooleanArray(...) instead for better performance",
-                                null);
+                                "Use `new SparseBooleanArray(...)` instead for better performance");
                     } else {
-                        // Don't suggest SparseLongArray; it is marked @hide
                         mContext.report(USE_SPARSE_ARRAY, node, mContext.getLocation(node),
                             String.format(
-                                "Use new SparseArray<%1$s>(...) instead for better performance",
-                              valueType),
-                            null);
+                                "Use `new SparseArray<%1$s>(...)` instead for better performance",
+                              valueType));
                     }
-                } else if (typeName.equals(LONG) && mContext.getProject().getMinSdk() >= 17) {
+                } else if (typeName.equals(LONG) && (minSdk >= 16 ||
+                        Boolean.TRUE == mContext.getMainProject().dependsOn(
+                                SUPPORT_LIB_ARTIFACT))) {
+                    boolean useBuiltin = minSdk >= 16;
+                    String message = useBuiltin ?
+                            "Use `new LongSparseArray(...)` instead for better performance" :
+                            "Use `new android.support.v4.util.LongSparseArray(...)` instead for better performance";
                     mContext.report(USE_SPARSE_ARRAY, node, mContext.getLocation(node),
-                            "Use new LongSparseArray(...) instead for better performance",
-                            null);
+                            message);
                 }
             }
         }
@@ -530,15 +538,32 @@ public class JavaPerformanceDetector extends Detector implements Detector.JavaSc
                 String valueType = first.getTypeName();
                 if (valueType.equals(INTEGER)) {
                     mContext.report(USE_SPARSE_ARRAY, node, mContext.getLocation(node),
-                        "Use new SparseIntArray(...) instead for better performance",
-                        null);
+                        "Use `new SparseIntArray(...)` instead for better performance");
                 } else if (valueType.equals(BOOLEAN)) {
                     mContext.report(USE_SPARSE_ARRAY, node, mContext.getLocation(node),
-                            "Use new SparseBooleanArray(...) instead for better performance",
-                            null);
+                            "Use `new SparseBooleanArray(...)` instead for better performance");
                 }
             }
         }
+    }
+
+    private static String getUseValueOfErrorMessage(String typeName, String argument) {
+        // Keep in sync with {@link #getReplacedType} below
+        return String.format("Use `%1$s.valueOf(%2$s)` instead", typeName, argument);
+    }
+
+    /**
+     * For an error message for an {@link #USE_VALUE_OF} issue reported by this detector,
+     * returns the type being replaced. Intended to use for IDE quickfix implementations.
+     */
+    @Nullable
+    public static String getReplacedType(@NonNull String message, @NonNull TextFormat format) {
+        message = format.toText(message);
+        int index = message.indexOf('.');
+        if (index != -1 && message.startsWith("Use ")) {
+            return message.substring(4, index);
+        }
+        return null;
     }
 
     /** Visitor which records variable names assigned into */

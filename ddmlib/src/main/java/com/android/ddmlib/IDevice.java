@@ -16,10 +16,16 @@
 
 package com.android.ddmlib;
 
+import com.android.annotations.NonNull;
+import com.android.annotations.Nullable;
 import com.android.ddmlib.log.LogReceiver;
 
 import java.io.IOException;
+import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 
 /**
  *  A Device. It can be a physical device or an emulator.
@@ -31,6 +37,11 @@ public interface IDevice extends IShellEnabledDevice {
     public static final String PROP_BUILD_CODENAME = "ro.build.version.codename";
     public static final String PROP_DEVICE_MODEL = "ro.product.model";
     public static final String PROP_DEVICE_MANUFACTURER = "ro.product.manufacturer";
+    public static final String PROP_DEVICE_CPU_ABI_LIST = "ro.product.cpu.abilist";
+    public static final String PROP_DEVICE_CPU_ABI = "ro.product.cpu.abi";
+    public static final String PROP_DEVICE_CPU_ABI2 = "ro.product.cpu.abi2";
+    public static final String PROP_BUILD_CHARACTERISTICS = "ro.build.characteristics";
+    public static final String PROP_DEVICE_DENSITY = "ro.sf.lcd_density";
 
     public static final String PROP_DEBUGGABLE = "ro.debuggable";
 
@@ -42,6 +53,27 @@ public interface IDevice extends IShellEnabledDevice {
     public static final int CHANGE_CLIENT_LIST = 0x0002;
     /** Device change bit mask: build info change. */
     public static final int CHANGE_BUILD_INFO = 0x0004;
+
+    /** Device level software features. */
+    public enum Feature {
+        SCREEN_RECORD,      // screen recorder available?
+        PROCSTATS,          // procstats service (dumpsys procstats) available
+    };
+
+    /** Device level hardware features. */
+    public enum HardwareFeature {
+        WATCH("watch");                   // supports feature watch
+
+        private final String mCharacteristic;
+
+        private HardwareFeature(String characteristic) {
+            mCharacteristic = characteristic;
+        }
+
+        public String getCharacteristic() {
+            return mCharacteristic;
+        }
+    }
 
     /** @deprecated Use {@link #PROP_BUILD_API_LEVEL}. */
     @Deprecated
@@ -58,7 +90,8 @@ public interface IDevice extends IShellEnabledDevice {
         BOOTLOADER("bootloader"), //$NON-NLS-1$
         OFFLINE("offline"), //$NON-NLS-1$
         ONLINE("device"), //$NON-NLS-1$
-        RECOVERY("recovery"); //$NON-NLS-1$
+        RECOVERY("recovery"), //$NON-NLS-1$
+        UNAUTHORIZED("unauthorized"); //$NON-NLS-1$
 
         private String mState;
 
@@ -72,6 +105,7 @@ public interface IDevice extends IShellEnabledDevice {
          * @param state the device state.
          * @return a {@link DeviceState} object or <code>null</code> if the state is unknown.
          */
+        @Nullable
         public static DeviceState getState(String state) {
             for (DeviceState deviceState : values()) {
                 if (deviceState.mState.equals(state)) {
@@ -101,9 +135,8 @@ public interface IDevice extends IShellEnabledDevice {
         }
     }
 
-    /**
-     * Returns the serial number of the device.
-     */
+    /** Returns the serial number of the device. */
+    @NonNull
     public String getSerialNumber();
 
     /**
@@ -114,6 +147,7 @@ public interface IDevice extends IShellEnabledDevice {
      *
      * @return the name of the AVD or <code>null</code> if there isn't any.
      */
+    @Nullable
     public String getAvdName();
 
     /**
@@ -122,23 +156,30 @@ public interface IDevice extends IShellEnabledDevice {
     public DeviceState getState();
 
     /**
-     * Returns the device properties. It contains the whole output of 'getprop'
+     * Returns the cached device properties. It contains the whole output of 'getprop'
+     *
+     * @deprecated use {@link #getSystemProperty(String)} instead
      */
+    @Deprecated
     public Map<String, String> getProperties();
 
     /**
      * Returns the number of property for this device.
+     *
+     * @deprecated implementation detail
      */
+    @Deprecated
     public int getPropertyCount();
 
     /**
-     * Returns the cached property value.
+     * Convenience method that attempts to retrieve a property via
+     * {@link #getSystemProperty(String)} with minimal wait time, and swallows exceptions.
      *
      * @param name the name of the value to return.
-     * @return the value or <code>null</code> if the property does not exist or has not yet been
-     * cached.
+     * @return the value or <code>null</code> if the property value was not immediately available
      */
-    public String getProperty(String name);
+    @Nullable
+    public String getProperty(@NonNull String name);
 
     /**
      * Returns <code>true></code> if properties have been cached
@@ -148,6 +189,7 @@ public interface IDevice extends IShellEnabledDevice {
     /**
      * A variant of {@link #getProperty(String)} that will attempt to retrieve the given
      * property from device directly, without using cache.
+     * This method should (only) be used for any volatile properties.
      *
      * @param name the name of the value to return.
      * @return the value or <code>null</code> if the property does not exist
@@ -156,14 +198,16 @@ public interface IDevice extends IShellEnabledDevice {
      * @throws ShellCommandUnresponsiveException in case the shell command doesn't send output for a
      *             given time.
      * @throws IOException in case of I/O error on the connection.
+     * @deprecated use {@link #getSystemProperty(String)}
      */
+    @Deprecated
     public String getPropertySync(String name) throws TimeoutException,
             AdbCommandRejectedException, ShellCommandUnresponsiveException, IOException;
 
     /**
      * A combination of {@link #getProperty(String)} and {@link #getPropertySync(String)} that
-     * will attempt to retrieve the property from cache if available, and if not, will query the
-     * device directly.
+     * will attempt to retrieve the property from cache. If not found, will synchronously
+     * attempt to query device directly and repopulate the cache if successful.
      *
      * @param name the name of the value to return.
      * @return the value or <code>null</code> if the property does not exist
@@ -172,9 +216,17 @@ public interface IDevice extends IShellEnabledDevice {
      * @throws ShellCommandUnresponsiveException in case the shell command doesn't send output for a
      *             given time.
      * @throws IOException in case of I/O error on the connection.
+     * @deprecated use {@link #getSystemProperty(String)} instead
      */
+    @Deprecated
     public String getPropertyCacheOrSync(String name) throws TimeoutException,
             AdbCommandRejectedException, ShellCommandUnresponsiveException, IOException;
+
+    /** Returns whether this device supports the given software feature. */
+    boolean supportsFeature(@NonNull Feature feature);
+
+    /** Returns whether this device supports the given hardware feature. */
+    boolean supportsFeature(@NonNull HardwareFeature feature);
 
     /**
      * Returns a mount point.
@@ -260,6 +312,14 @@ public interface IDevice extends IShellEnabledDevice {
      */
     public RawImage getScreenshot() throws TimeoutException, AdbCommandRejectedException,
             IOException;
+
+    /**
+     * Initiates screen recording on the device if the device supports {@link Feature#SCREEN_RECORD}.
+     */
+    public void startScreenRecorder(@NonNull String remoteFilePath,
+            @NonNull ScreenRecorderOptions options, @NonNull IShellOutputReceiver receiver) throws
+            TimeoutException, AdbCommandRejectedException, IOException,
+            ShellCommandUnresponsiveException;
 
     /**
      * @deprecated Use {@link #executeShellCommand(String, IShellOutputReceiver, long, java.util.concurrent.TimeUnit)}.
@@ -419,6 +479,18 @@ public interface IDevice extends IShellEnabledDevice {
             throws InstallException;
 
     /**
+     * Installs an Android application made of serveral APK files (one main and 0..n split packages)
+     *
+     * @param apkFilePaths list of absolute file system path to files on local host to install
+     * @param reinstall set to <code>true</code> if re-install of app should be performed
+     * @param extraArgs optional extra arguments to pass. See 'adb shell pm install --help' for
+     *            available options.
+     * @throws InstallException if the installation fails.
+     */
+
+    public void installPackages(List<String> apkFilePaths, int timeOut,
+            boolean reinstall, String... extraArgs) throws InstallException;
+    /**
      * Pushes a file to device
      *
      * @param localFilePath the absolute path to file on local host
@@ -478,7 +550,9 @@ public interface IDevice extends IShellEnabledDevice {
      * battery level if 5 minutes have expired since the last successful query.
      *
      * @return the battery level or <code>null</code> if it could not be retrieved
+     * @deprecated use {@link #getBattery()}
      */
+    @Deprecated
     public Integer getBatteryLevel() throws TimeoutException,
             AdbCommandRejectedException, IOException, ShellCommandUnresponsiveException;
 
@@ -491,8 +565,51 @@ public interface IDevice extends IShellEnabledDevice {
      * @param freshnessMs
      * @return the battery level or <code>null</code> if it could not be retrieved
      * @throws ShellCommandUnresponsiveException
+     * @deprecated use {@link #getBattery(long, TimeUnit))}
      */
+    @Deprecated
     public Integer getBatteryLevel(long freshnessMs) throws TimeoutException,
             AdbCommandRejectedException, IOException, ShellCommandUnresponsiveException;
 
+    /**
+     * Return the device's battery level, from 0 to 100 percent.
+     * <p/>
+     * The battery level may be cached. Only queries the device for its
+     * battery level if 5 minutes have expired since the last successful query.
+     *
+     * @return a {@link Future} that can be used to query the battery level. The Future will return
+     * a {@link ExecutionException} if battery level could not be retrieved.
+     */
+    @NonNull
+    public Future<Integer> getBattery();
+
+    /**
+     * Return the device's battery level, from 0 to 100 percent.
+     * <p/>
+     * The battery level may be cached. Only queries the device for its
+     * battery level if <code>freshnessTime</code> has expired since the last successful query.
+     *
+     * @param freshnessTime the desired recency of battery level
+     * @param timeUnit the {@link TimeUnit} of freshnessTime
+     * @return a {@link Future} that can be used to query the battery level. The Future will return
+     * a {@link ExecutionException} if battery level could not be retrieved.
+     */
+    @NonNull
+    public Future<Integer> getBattery(long freshnessTime, @NonNull TimeUnit timeUnit);
+
+
+    /**
+     * Returns the ABIs supported by this device. The ABIs are sorted in preferred order, with the
+     * first ABI being the most preferred.
+     * @return the list of ABIs.
+     */
+    @NonNull
+    public List<String> getAbis();
+
+    /**
+     * Returns the density bucket of the device screen.
+     *
+     * @return the density, or 0 if it's unknown.
+     */
+    public int getDensity();
 }

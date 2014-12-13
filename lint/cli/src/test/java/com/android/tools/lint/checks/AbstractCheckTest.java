@@ -16,19 +16,31 @@
 
 package com.android.tools.lint.checks;
 
+import static com.android.SdkConstants.ANDROID_URI;
+import static com.android.SdkConstants.ATTR_ID;
+import static com.android.SdkConstants.NEW_ID_PREFIX;
+
 import com.android.annotations.NonNull;
 import com.android.annotations.Nullable;
+import com.android.ide.common.res2.AbstractResourceRepository;
+import com.android.ide.common.res2.DuplicateDataException;
+import com.android.ide.common.res2.MergingException;
+import com.android.ide.common.res2.ResourceFile;
+import com.android.ide.common.res2.ResourceItem;
+import com.android.ide.common.res2.ResourceMerger;
+import com.android.ide.common.res2.ResourceRepository;
+import com.android.ide.common.res2.ResourceSet;
+import com.android.resources.ResourceFolderType;
+import com.android.resources.ResourceType;
+import com.android.sdklib.IAndroidTarget;
 import com.android.testutils.SdkTestCase;
 import com.android.tools.lint.LintCliClient;
 import com.android.tools.lint.LintCliFlags;
-import com.android.tools.lint.LintCliXmlParser;
-import com.android.tools.lint.LombokParser;
 import com.android.tools.lint.Reporter;
 import com.android.tools.lint.TextReporter;
+import com.android.tools.lint.Warning;
 import com.android.tools.lint.client.api.Configuration;
 import com.android.tools.lint.client.api.DefaultConfiguration;
-import com.android.tools.lint.client.api.IDomParser;
-import com.android.tools.lint.client.api.IJavaParser;
 import com.android.tools.lint.client.api.IssueRegistry;
 import com.android.tools.lint.client.api.LintClient;
 import com.android.tools.lint.client.api.LintDriver;
@@ -36,11 +48,30 @@ import com.android.tools.lint.client.api.LintRequest;
 import com.android.tools.lint.detector.api.Context;
 import com.android.tools.lint.detector.api.Detector;
 import com.android.tools.lint.detector.api.Issue;
+import com.android.tools.lint.detector.api.LintUtils;
 import com.android.tools.lint.detector.api.Location;
 import com.android.tools.lint.detector.api.Project;
 import com.android.tools.lint.detector.api.Scope;
 import com.android.tools.lint.detector.api.Severity;
+import com.android.tools.lint.detector.api.TextFormat;
+import com.android.utils.ILogger;
 import com.android.utils.SdkUtils;
+import com.android.utils.StdLogger;
+import com.android.utils.XmlUtils;
+import com.google.common.base.Charsets;
+import com.google.common.collect.ArrayListMultimap;
+import com.google.common.collect.ListMultimap;
+import com.google.common.collect.Lists;
+import com.google.common.collect.Maps;
+import com.google.common.collect.Sets;
+import com.google.common.io.Files;
+
+import org.w3c.dom.Attr;
+import org.w3c.dom.Document;
+import org.w3c.dom.Element;
+import org.w3c.dom.NamedNodeMap;
+import org.w3c.dom.Node;
+import org.w3c.dom.NodeList;
 
 import java.io.BufferedInputStream;
 import java.io.File;
@@ -51,13 +82,15 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.StringWriter;
 import java.net.MalformedURLException;
-import java.net.URISyntaxException;
 import java.net.URL;
 import java.security.CodeSource;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.EnumSet;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 
 /** Common utility methods for the various lint check tests */
 @SuppressWarnings("javadoc")
@@ -95,7 +128,7 @@ public abstract class AbstractCheckTest extends SdkTestCase {
         return issues;
     }
 
-    private class CustomIssueRegistry extends IssueRegistry {
+    public class CustomIssueRegistry extends IssueRegistry {
         @NonNull
         @Override
         public List<Issue> getIssues() {
@@ -112,14 +145,32 @@ public abstract class AbstractCheckTest extends SdkTestCase {
             files.add(file);
         }
 
+        Collections.sort(files, new Comparator<File>() {
+            @Override
+            public int compare(File file1, File file2) {
+                ResourceFolderType folder1 = ResourceFolderType.getFolderType(
+                        file1.getParentFile().getName());
+                ResourceFolderType folder2 = ResourceFolderType.getFolderType(
+                        file2.getParentFile().getName());
+                if (folder1 != null && folder2 != null && folder1 != folder2) {
+                    return folder1.compareTo(folder2);
+                }
+                return file1.compareTo(file2);
+            }
+        });
+
         addManifestFile(targetDir);
 
         return checkLint(files);
     }
 
     protected String checkLint(List<File> files) throws Exception {
-        mOutput = new StringBuilder();
         TestLintClient lintClient = createClient();
+        return checkLint(lintClient, files);
+    }
+
+    protected String checkLint(TestLintClient lintClient, List<File> files) throws Exception {
+        mOutput = new StringBuilder();
         String result = lintClient.analyze(files);
 
         // The output typically contains a few directory/filenames.
@@ -134,6 +185,14 @@ public abstract class AbstractCheckTest extends SdkTestCase {
         }
 
         return result;
+    }
+
+    protected void checkReportedError(
+            @NonNull Context context,
+            @NonNull Issue issue,
+            @NonNull Severity severity,
+            @Nullable Location location,
+            @NonNull String message) {
     }
 
     protected TestLintClient createClient() {
@@ -155,6 +214,16 @@ public abstract class AbstractCheckTest extends SdkTestCase {
     protected String lintProject(String... relativePaths) throws Exception {
         File projectDir = getProjectDir(null, relativePaths);
         return checkLint(Collections.singletonList(projectDir));
+    }
+
+    protected String lintProjectIncrementally(String currentFile, String... relativePaths)
+            throws Exception {
+        File projectDir = getProjectDir(null, relativePaths);
+        File current = new File(projectDir, currentFile.replace('/', File.separatorChar));
+        assertTrue(current.exists());
+        TestLintClient client = createClient();
+        client.setIncremental(current);
+        return checkLint(client, Collections.singletonList(projectDir));
     }
 
     @Override
@@ -268,10 +337,11 @@ public abstract class AbstractCheckTest extends SdkTestCase {
 
     public class TestLintClient extends LintCliClient {
         private StringWriter mWriter = new StringWriter();
+        private File mIncrementalCheck;
 
         public TestLintClient() {
             super(new LintCliFlags());
-            mFlags.getReporters().add(new TextReporter(this, mWriter, false));
+            mFlags.getReporters().add(new TextReporter(this, mFlags, mWriter, false));
         }
 
         @Override
@@ -287,9 +357,50 @@ public abstract class AbstractCheckTest extends SdkTestCase {
         public String analyze(List<File> files) throws Exception {
             mDriver = new LintDriver(new CustomIssueRegistry(), this);
             configureDriver(mDriver);
-            mDriver.analyze(new LintRequest(this, files).setScope(getLintScope(files)));
+            LintRequest request = new LintRequest(this, files);
+            if (mIncrementalCheck != null) {
+                assertEquals(1, files.size());
+                File projectDir = files.get(0);
+                assertTrue(isProjectDirectory(projectDir));
+                Project project = createProject(projectDir, projectDir);
+                project.addFile(mIncrementalCheck);
+                List<Project> projects = Collections.singletonList(project);
+                request.setProjects(projects);
+            }
+
+            mDriver.analyze(request.setScope(getLintScope(files)));
+
+            // Check compare contract
+            Warning prev = null;
+            for (Warning warning : mWarnings) {
+                if (prev != null) {
+                    boolean equals = warning.equals(prev);
+                    assertEquals(equals, prev.equals(warning));
+                    int compare = warning.compareTo(prev);
+                    assertEquals(equals, compare == 0);
+                    assertEquals(-compare, prev.compareTo(warning));
+                }
+                prev = warning;
+            }
 
             Collections.sort(mWarnings);
+
+            // Check compare contract & transitivity
+            Warning prev2 = prev;
+            prev = null;
+            for (Warning warning : mWarnings) {
+                if (prev != null && prev2 != null) {
+                    assertTrue(warning.compareTo(prev) >= 0);
+                    assertTrue(prev.compareTo(prev2) >= 0);
+                    assertTrue(warning.compareTo(prev2) >= 0);
+
+                    assertTrue(prev.compareTo(warning) <= 0);
+                    assertTrue(prev2.compareTo(prev) <= 0);
+                    assertTrue(prev2.compareTo(warning) <= 0);
+                }
+                prev2 = prev;
+                prev = warning;
+            }
 
             for (Reporter reporter : mFlags.getReporters()) {
                 reporter.write(mErrorCount, mWarningCount, mWarnings);
@@ -302,7 +413,7 @@ public abstract class AbstractCheckTest extends SdkTestCase {
             }
 
             String result = mOutput.toString();
-            if (result.equals("\nNo issues found.\n")) {
+            if (result.equals("No issues found.\n")) {
                 result = "No warnings.";
             }
 
@@ -322,10 +433,17 @@ public abstract class AbstractCheckTest extends SdkTestCase {
                 @NonNull Severity severity,
                 @Nullable Location location,
                 @NonNull String message,
-                @Nullable Object data) {
+                @NonNull TextFormat format) {
             if (ignoreSystemErrors() && (issue == IssueRegistry.LINT_ERROR)) {
                 return;
             }
+
+            // Use plain ascii in the test golden files for now. (This also ensures
+            // that the markup is wellformed, e.g. if we have a ` without a matching
+            // closing `, the ` would show up in the plain text.)
+            message = format.convertTo(message, TextFormat.TEXT);
+
+            checkReportedError(context, issue, severity, location, message);
 
             if (severity == Severity.FATAL) {
                 // Treat fatal errors like errors in the golden files.
@@ -336,15 +454,29 @@ public abstract class AbstractCheckTest extends SdkTestCase {
             // specifically included in the text report
             if (location != null && location.getSecondary() != null) {
                 Location l = location.getSecondary();
+                if (l == location) {
+                    fail("Location link cycle");
+                }
                 while (l != null) {
                     if (l.getMessage() == null) {
                         l.setMessage("<No location-specific message");
+                    }
+                    if (l == l.getSecondary()) {
+                        fail("Location link cycle");
                     }
                     l = l.getSecondary();
                 }
             }
 
-            super.report(context, issue, severity, location, message, data);
+            super.report(context, issue, severity, location, message, format);
+
+            // Make sure errors are unique!
+            Warning prev = null;
+            for (Warning warning : mWarnings) {
+                assertNotSame(warning, prev);
+                assert prev == null || !warning.equals(prev);
+                prev = warning;
+            }
         }
 
         @Override
@@ -364,16 +496,6 @@ public abstract class AbstractCheckTest extends SdkTestCase {
             if (exception != null) {
                 fail(exception.toString());
             }
-        }
-
-        @Override
-        public IDomParser getDomParser() {
-            return new LintCliXmlParser();
-        }
-
-        @Override
-        public IJavaParser getJavaParser() {
-            return new LombokParser();
         }
 
         @Override
@@ -429,6 +551,177 @@ public abstract class AbstractCheckTest extends SdkTestCase {
         public List<File> findGlobalRuleJars() {
             // Don't pick up random custom rules in ~/.android/lint when running unit tests
             return Collections.emptyList();
+        }
+
+        public void setIncremental(File currentFile) {
+            mIncrementalCheck = currentFile;
+        }
+
+        @Override
+        public boolean supportsProjectResources() {
+            return mIncrementalCheck != null;
+        }
+
+        @Nullable
+        @Override
+        public AbstractResourceRepository getProjectResources(Project project,
+                boolean includeDependencies) {
+            if (mIncrementalCheck == null) {
+                return null;
+            }
+
+            ResourceRepository repository = new ResourceRepository(false);
+            ILogger logger = new StdLogger(StdLogger.Level.INFO);
+            ResourceMerger merger = new ResourceMerger();
+
+            ResourceSet resourceSet = new ResourceSet(getName()) {
+                @Override
+                protected void checkItems() throws DuplicateDataException {
+                    // No checking in ProjectResources; duplicates can happen, but
+                    // the project resources shouldn't abort initialization
+                }
+            };
+            // Only support 1 resource folder in test setup right now
+            assertEquals(1, project.getResourceFolders().size());
+            resourceSet.addSource(project.getResourceFolders().get(0));
+            try {
+                resourceSet.loadFromFiles(logger);
+                merger.addDataSet(resourceSet);
+                merger.mergeData(repository.createMergeConsumer(), true);
+
+                // Make tests stable: sort the item lists!
+                Map<ResourceType, ListMultimap<String, ResourceItem>> map = repository.getItems();
+                for (Map.Entry<ResourceType, ListMultimap<String, ResourceItem>> entry : map.entrySet()) {
+                    Map<String, List<ResourceItem>> m = Maps.newHashMap();
+                    ListMultimap<String, ResourceItem> value = entry.getValue();
+                    List<List<ResourceItem>> lists = Lists.newArrayList();
+                    for (Map.Entry<String, ResourceItem> e : value.entries()) {
+                        String key = e.getKey();
+                        ResourceItem item = e.getValue();
+
+                        List<ResourceItem> list = m.get(key);
+                        if (list == null) {
+                            list = Lists.newArrayList();
+                            lists.add(list);
+                            m.put(key, list);
+                        }
+                        list.add(item);
+                    }
+
+                    for (List<ResourceItem> list : lists) {
+                        Collections.sort(list, new Comparator<ResourceItem>() {
+                            @Override
+                            public int compare(ResourceItem o1, ResourceItem o2) {
+                                return o1.getKey().compareTo(o2.getKey());
+                            }
+                        });
+                    }
+
+                    // Store back in list multi map in new sorted order
+                    value.clear();
+                    for (Map.Entry<String, List<ResourceItem>> e : m.entrySet()) {
+                        String key = e.getKey();
+                        List<ResourceItem> list = e.getValue();
+                        for (ResourceItem item : list) {
+                            value.put(key, item);
+                        }
+                    }
+                }
+
+                // Workaround: The repository does not insert ids from layouts! We need
+                // to do that here.
+                Map<ResourceType,ListMultimap<String,ResourceItem>> items = repository.getItems();
+                ListMultimap<String, ResourceItem> layouts = items
+                        .get(ResourceType.LAYOUT);
+                if (layouts != null) {
+                    for (ResourceItem item : layouts.values()) {
+                        ResourceFile source = item.getSource();
+                        if (source == null) {
+                            continue;
+                        }
+                        File file = source.getFile();
+                        try {
+                            String xml = Files.toString(file, Charsets.UTF_8);
+                            Document document = XmlUtils.parseDocumentSilently(xml, true);
+                            assertNotNull(document);
+                            Set<String> ids = Sets.newHashSet();
+                            addIds(ids, document); // TODO: pull parser
+                            if (!ids.isEmpty()) {
+                                ListMultimap<String, ResourceItem> idMap =
+                                        items.get(ResourceType.ID);
+                                if (idMap == null) {
+                                    idMap = ArrayListMultimap.create();
+                                    items.put(ResourceType.ID, idMap);
+                                }
+                                for (String id : ids) {
+                                    ResourceItem idItem = new ResourceItem(id, ResourceType.ID,
+                                            null);
+                                    String qualifiers = file.getParentFile().getName();
+                                    if (qualifiers.startsWith("layout-")) {
+                                        qualifiers = qualifiers.substring("layout-".length());
+                                    } else if (qualifiers.equals("layout")) {
+                                        qualifiers = "";
+                                    }
+                                    idItem.setSource(new ResourceFile(file, item, qualifiers));
+                                    idMap.put(id, idItem);
+                                }
+                            }
+                        } catch (IOException e) {
+                            fail(e.toString());
+                        }
+                    }
+                }
+            }
+            catch (DuplicateDataException e) {
+                fail(e.getMessage());
+            }
+            catch (MergingException e) {
+                fail(e.getMessage());
+            }
+
+            return repository;
+        }
+
+        private void addIds(Set<String> ids, Node node) {
+            if (node.getNodeType() == Node.ELEMENT_NODE) {
+                Element element = (Element) node;
+                String id = element.getAttributeNS(ANDROID_URI, ATTR_ID);
+                if (id != null && !id.isEmpty()) {
+                    ids.add(LintUtils.stripIdPrefix(id));
+                }
+
+                NamedNodeMap attributes = element.getAttributes();
+                for (int i = 0, n = attributes.getLength(); i < n; i++) {
+                    Attr attribute = (Attr) attributes.item(i);
+                    String value = attribute.getValue();
+                    if (value.startsWith(NEW_ID_PREFIX)) {
+                        ids.add(value.substring(NEW_ID_PREFIX.length()));
+                    }
+                }
+            }
+
+            NodeList children = node.getChildNodes();
+            for (int i = 0, n = children.getLength(); i < n; i++) {
+                Node child = children.item(i);
+                addIds(ids, child);
+            }
+        }
+
+        @Nullable
+        @Override
+        public IAndroidTarget getCompileTarget(@NonNull Project project) {
+            IAndroidTarget compileTarget = super.getCompileTarget(project);
+            if (compileTarget == null) {
+                IAndroidTarget[] targets = getTargets();
+                for (int i = targets.length - 1; i >= 0; i--) {
+                    IAndroidTarget target = targets[i];
+                    if (target.isPlatform()) {
+                        return target;
+                    }
+                }
+            }
+
+            return compileTarget;
         }
     }
 
@@ -501,7 +794,7 @@ public abstract class AbstractCheckTest extends SdkTestCase {
 
         @Override
         public void ignore(@NonNull Context context, @NonNull Issue issue,
-                @Nullable Location location, @NonNull String message, @Nullable Object data) {
+                @Nullable Location location, @NonNull String message) {
             fail("Not supported in tests.");
         }
 

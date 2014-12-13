@@ -65,7 +65,6 @@ public abstract class IssueRegistry {
     public static final Issue PARSER_ERROR = Issue.create(
             "ParserError", //$NON-NLS-1$
             "Parser Errors",
-            "Finds files that contain fatal parser errors",
             "Lint will ignore any files that contain fatal parsing errors. These may contain " +
             "other errors, or contain code which affects issues in other files.",
             Category.CORRECTNESS,
@@ -81,7 +80,6 @@ public abstract class IssueRegistry {
     public static final Issue LINT_ERROR = Issue.create(
             "LintError", //$NON-NLS-1$
             "Lint Failure",
-            "Issues related to running lint itself, such as failure to read files, etc",
             "This issue type represents a problem running lint itself. Examples include " +
             "failure to find bytecode for source files (which means certain detectors " +
             "could not be run), parsing errors in lint configuration files, etc." +
@@ -101,7 +99,6 @@ public abstract class IssueRegistry {
     public static final Issue CANCELLED = Issue.create(
             "LintCanceled", //$NON-NLS-1$
             "Lint Canceled",
-            "Lint canceled by user",
             "Lint canceled by user; the issue report may not be complete.",
 
             Category.LINT,
@@ -119,6 +116,17 @@ public abstract class IssueRegistry {
     public abstract List<Issue> getIssues();
 
     /**
+     * Get an approximate issue count for a given scope. This is just an optimization,
+     * so the number does not have to be accurate.
+     *
+     * @param scope the scope set
+     * @return an approximate ceiling of the number of issues expected for a given scope set
+     */
+    protected int getIssueCapacity(@NonNull EnumSet<Scope> scope) {
+        return 20;
+    }
+
+    /**
      * Returns all available issues of a given scope (regardless of whether
      * they are actually enabled for a given configuration etc)
      *
@@ -126,24 +134,14 @@ public abstract class IssueRegistry {
      * @return a list of issues
      */
     @NonNull
-    private List<Issue> getIssuesForScope(@NonNull EnumSet<Scope> scope) {
+    protected List<Issue> getIssuesForScope(@NonNull EnumSet<Scope> scope) {
         List<Issue> list = sScopeIssues.get(scope);
         if (list == null) {
             List<Issue> issues = getIssues();
             if (scope.equals(Scope.ALL)) {
                 list = issues;
             } else {
-                int initialSize = 12;
-                if (scope.contains(Scope.RESOURCE_FILE)) {
-                    initialSize += 50;
-                }
-                if (scope.contains(Scope.JAVA_FILE)) {
-                    initialSize += 12;
-                }
-                if (scope.contains(Scope.CLASS_FILE)) {
-                    initialSize += 12;
-                }
-                list = new ArrayList<Issue>(initialSize);
+                list = new ArrayList<Issue>(getIssueCapacity(scope));
                 for (Issue issue : issues) {
                     // Determine if the scope matches
                     if (issue.getImplementation().isAdequate(scope)) {

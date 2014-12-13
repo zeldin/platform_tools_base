@@ -18,18 +18,26 @@ package com.android.sdklib.internal.repository.packages;
 
 import com.android.SdkConstants;
 import com.android.annotations.NonNull;
+import com.android.annotations.Nullable;
 import com.android.annotations.VisibleForTesting;
 import com.android.annotations.VisibleForTesting.Visibility;
+import com.android.sdklib.AndroidTargetHash;
 import com.android.sdklib.AndroidVersion;
 import com.android.sdklib.AndroidVersion.AndroidVersionException;
 import com.android.sdklib.SdkManager;
 import com.android.sdklib.SystemImage;
+import com.android.sdklib.devices.Abi;
 import com.android.sdklib.internal.repository.IDescription;
-import com.android.sdklib.internal.repository.archives.Archive.Arch;
-import com.android.sdklib.internal.repository.archives.Archive.Os;
 import com.android.sdklib.internal.repository.sources.SdkSource;
+import com.android.sdklib.repository.MajorRevision;
 import com.android.sdklib.repository.PkgProps;
+import com.android.sdklib.repository.SdkAddonConstants;
 import com.android.sdklib.repository.SdkRepoConstants;
+import com.android.sdklib.repository.SdkSysImgConstants;
+import com.android.sdklib.repository.descriptors.IPkgDesc;
+import com.android.sdklib.repository.descriptors.IdDisplay;
+import com.android.sdklib.repository.descriptors.PkgDesc;
+import com.android.sdklib.repository.local.LocalSysImgPkgInfo;
 
 import org.w3c.dom.Node;
 
@@ -37,6 +45,7 @@ import java.io.File;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Properties;
+import java.util.regex.Pattern;
 
 /**
  * Represents a system-image XML node in an SDK repository.
@@ -49,6 +58,11 @@ public class SystemImagePackage extends MajorRevisionPackage
 
     /** The ABI of the system-image. Must not be null nor empty. */
     private final String mAbi;
+
+    private final IPkgDesc mPkgDesc;
+
+    private final IdDisplay mTag;
+    private final IdDisplay mAddonVendor;
 
     /**
      * Creates a new system-image package from the attributes and elements of the given XML node.
@@ -76,6 +90,63 @@ public class SystemImagePackage extends MajorRevisionPackage
         mVersion = new AndroidVersion(apiLevel, codeName);
 
         mAbi = PackageParserUtils.getXmlString(packageNode, SdkRepoConstants.NODE_ABI);
+
+        // tag id
+        String tagId = PackageParserUtils.getXmlString(packageNode,
+                                                       SdkSysImgConstants.ATTR_TAG_ID,
+                                                       SystemImage.DEFAULT_TAG.getId());
+        String tagDisp = PackageParserUtils.getOptionalXmlString(packageNode,
+                                                       SdkSysImgConstants.ATTR_TAG_DISPLAY);
+        if (tagDisp == null || tagDisp.isEmpty()) {
+            tagDisp = LocalSysImgPkgInfo.tagIdToDisplay(tagId);
+        }
+        assert tagId   != null;
+        assert tagDisp != null;
+        mTag = new IdDisplay(tagId, tagDisp);
+
+
+        Node addonNode =
+                PackageParserUtils.findChildElement(packageNode, SdkSysImgConstants.NODE_ADD_ON);
+
+        IPkgDesc desc = null;
+        IdDisplay vendor = null;
+
+        if (addonNode == null) {
+            // A platform system-image
+            desc = PkgDesc.Builder
+                    .newSysImg(mVersion,
+                               mTag,
+                               mAbi,
+                               (MajorRevision) getRevision())
+                    .setDescriptions(this)
+                    .create();
+        } else {
+            // An add-on system-image
+            String vendorId   = PackageParserUtils.getXmlString(
+                    addonNode,
+                    SdkAddonConstants.NODE_VENDOR_ID);
+            String vendorDisp = PackageParserUtils.getXmlString(
+                    addonNode,
+                    SdkAddonConstants.NODE_VENDOR_DISPLAY,
+                    vendorId);
+
+            assert vendorId.length() > 0;
+            assert vendorDisp.length() > 0;
+
+            vendor = new IdDisplay(vendorId, vendorDisp);
+
+            desc = PkgDesc.Builder
+                    .newAddonSysImg(mVersion,
+                                    vendor,
+                                    mTag,
+                                    mAbi,
+                                    (MajorRevision) getRevision())
+                    .setDescriptions(this)
+                    .create();
+        }
+
+        mPkgDesc = desc;
+        mAddonVendor = vendor;
     }
 
     @VisibleForTesting(visibility=Visibility.PRIVATE)
@@ -102,8 +173,6 @@ public class SystemImagePackage extends MajorRevisionPackage
                 null,                       //license
                 null,                       //description
                 null,                       //descUrl
-                Os.getCurrentOs(),          //archiveOs
-                Arch.getCurrentArch(),      //archiveArch
                 localOsPath                 //archiveOsPath
                 );
         mVersion = platformVersion;
@@ -112,13 +181,50 @@ public class SystemImagePackage extends MajorRevisionPackage
         }
         assert abi != null : "To use this SystemImagePackage constructor you must pass an ABI as a parameter or as a PROP_ABI property";
         mAbi = abi;
+
+        mTag = LocalSysImgPkgInfo.extractTagFromProps(props);
+
+        String vendorId   = getProperty(props, PkgProps.ADDON_VENDOR_ID, null);
+        String vendorDisp = getProperty(props, PkgProps.ADDON_VENDOR_DISPLAY, vendorId);
+
+        IPkgDesc desc = null;
+        IdDisplay vendor = null;
+
+        if (vendorId == null) {
+            // A platform system-image
+            desc = PkgDesc.Builder
+                    .newSysImg(mVersion,
+                               mTag,
+                               mAbi,
+                               (MajorRevision) getRevision())
+                    .setDescriptions(this)
+                    .create();
+        } else {
+            // An add-on system-image
+            assert vendorId.length() > 0;
+            assert vendorDisp.length() > 0;
+
+            vendor = new IdDisplay(vendorId, vendorDisp);
+
+            desc = PkgDesc.Builder
+                    .newAddonSysImg(mVersion,
+                                    vendor,
+                                    mTag,
+                                    mAbi,
+                                    (MajorRevision) getRevision())
+                    .setDescriptions(this)
+                    .create();
+        }
+
+        mPkgDesc = desc;
+        mAddonVendor = vendor;
     }
 
     /**
      * Creates a {@link BrokenPackage} representing a system image that failed to load
      * with the regular {@link SdkManager} workflow.
      *
-     * @param abiDir The SDK/system-images/android-N/abi folder
+     * @param abiDir The SDK/system-images/android-N/tag/abi folder
      * @param props The properties located in {@code abiDir} or null if not found.
      * @return A new {@link BrokenPackage} that represents this installed package.
      */
@@ -126,8 +232,9 @@ public class SystemImagePackage extends MajorRevisionPackage
         AndroidVersion version = null;
         String abiType = abiDir.getName();
         String error = null;
+        IdDisplay tag = null;
 
-        // Try to load the android version & ABI from the sources.props.
+        // Try to load the android version, tag & ABI from the sources.props.
         // If we don't find them, it would explain why this package is broken.
         if (props == null) {
             error = String.format("Missing file %1$s", SdkConstants.FN_SOURCE_PROP);
@@ -135,6 +242,7 @@ public class SystemImagePackage extends MajorRevisionPackage
             try {
                 version = new AndroidVersion(props);
 
+                tag = LocalSysImgPkgInfo.extractTagFromProps(props);
                 String abi = props.getProperty(PkgProps.SYS_IMG_ABI);
                 if (abi != null) {
                     abiType = abi;
@@ -150,23 +258,57 @@ public class SystemImagePackage extends MajorRevisionPackage
             }
         }
 
-        if (version == null) {
-            try {
-                // Try to parse the first number out of the platform folder name.
-                String platform = abiDir.getParentFile().getName();
-                platform = platform.replaceAll("[^0-9]+", " ").trim();  //$NON-NLS-1$ //$NON-NLS-2$
-                int pos = platform.indexOf(' ');
-                if (pos >= 0) {
-                    platform = platform.substring(0, pos);
+        try {
+            // Try to parse the first number out of the platform folder name.
+            // Also try to parse the tag if not known yet.
+            // Folder structure should be:
+            // Tools < 22.6 / API < 20: sdk/system-images/android-N/abi/
+            // Tools >=22.6 / API >=20: sdk/system-images/android-N/tag/abi/
+            String[] segments = abiDir.getAbsolutePath().split(Pattern.quote(File.separator));
+            int len = segments.length;
+            for (int i = len - 2; version == null && i >= 0; i--) {
+                if (SdkConstants.FD_SYSTEM_IMAGES.equals(segments[i])) {
+                    if (version == null) {
+                        String platform = segments[i+1];
+                        try {
+                            platform = platform.replaceAll("[^0-9]+", " ").trim();  //$NON-NLS-1$ //$NON-NLS-2$
+                            int pos = platform.indexOf(' ');
+                            if (pos >= 0) {
+                                platform = platform.substring(0, pos);
+                            }
+                            int apiLevel = Integer.parseInt(platform);
+                            version = new AndroidVersion(apiLevel, null /*codename*/);
+                        } catch (Exception ignore) {}
+                    }
+                    if (tag == null && i+2 < len) {
+                        // If we failed to find a tag id in the properties, check whether
+                        // we can guess one from the system image folder path. It should
+                        // match the limited tag id character set and not be one of the
+                        // known ABIs.
+                        String abiOrTag = segments[i+2].trim();
+                        if (abiOrTag.matches("[A-Za-z0-9_-]+")) {
+                            if (Abi.getEnum(abiOrTag) == null) {
+                                tag = new IdDisplay(abiOrTag,
+                                                    LocalSysImgPkgInfo.tagIdToDisplay(abiOrTag));
+                            }
+                        }
+                    }
                 }
-                int apiLevel = Integer.parseInt(platform);
-                version = new AndroidVersion(apiLevel, null /*codename*/);
-            } catch (Exception ignore) {
             }
-        }
+        } catch (Exception ignore) {}
 
-        StringBuilder sb = new StringBuilder(
-                String.format("Broken %1$s System Image", getAbiDisplayNameInternal(abiType)));
+        String vendorId   = getProperty(props, PkgProps.ADDON_VENDOR_ID, null);
+        String vendorDisp = getProperty(props, PkgProps.ADDON_VENDOR_DISPLAY, vendorId);
+
+        StringBuilder sb = new StringBuilder("Broken ");
+        sb.append(getAbiDisplayNameInternal(abiType)).append(' ');
+        if (tag != null && !tag.getId().equals(SystemImage.DEFAULT_TAG.getId())) {
+            sb.append(tag).append(' ');
+        }
+        sb.append("System Image");
+        if (vendorDisp != null) {
+            sb.append(", by ").append(vendorDisp);
+        }
         if (version != null) {
             sb.append(String.format(", API %1$s", version.getApiString()));
         }
@@ -179,10 +321,31 @@ public class SystemImagePackage extends MajorRevisionPackage
 
         String longDesc = sb.toString();
 
+        if (tag == null) {
+            // No tag? Use the default.
+            tag = SystemImage.DEFAULT_TAG;
+        }
+        assert tag != null;
+
+        IPkgDesc desc = PkgDesc.Builder
+                .newSysImg(version != null ? version : new AndroidVersion(0, null),
+                           tag,
+                           abiType,
+                           new MajorRevision(MajorRevision.MISSING_MAJOR_REV))
+                .setDescriptionShort(shortDesc)
+                .create();
+
         return new BrokenPackage(props, shortDesc, longDesc,
                 IMinApiLevelDependency.MIN_API_LEVEL_NOT_SPECIFIED,
                 version==null ? IExactApiLevelDependency.API_LEVEL_INVALID : version.getApiLevel(),
-                abiDir.getAbsolutePath());
+                abiDir.getAbsolutePath(),
+                desc);
+    }
+
+    @Override
+    @NonNull
+    public IPkgDesc getPkgDesc() {
+        return mPkgDesc;
     }
 
     /**
@@ -194,7 +357,20 @@ public class SystemImagePackage extends MajorRevisionPackage
         super.saveProperties(props);
 
         mVersion.saveProperties(props);
-        props.setProperty(PkgProps.SYS_IMG_ABI, mAbi);
+        props.setProperty(PkgProps.SYS_IMG_ABI,         mAbi);
+        props.setProperty(PkgProps.SYS_IMG_TAG_ID,      mTag.getId());
+        props.setProperty(PkgProps.SYS_IMG_TAG_DISPLAY, mTag.getDisplay());
+
+        if (mAddonVendor != null) {
+            props.setProperty(PkgProps.ADDON_VENDOR_ID,      mAddonVendor.getId());
+            props.setProperty(PkgProps.ADDON_VENDOR_DISPLAY, mAddonVendor.getDisplay());
+        }
+    }
+
+    /** Returns the tag of the system-image. */
+    @NonNull
+    public IdDisplay getTag() {
+        return mTag;
     }
 
     /** Returns the ABI of the system-image. Cannot be null nor empty. */
@@ -208,10 +384,12 @@ public class SystemImagePackage extends MajorRevisionPackage
     }
 
     private static String getAbiDisplayNameInternal(String abi) {
-        return abi.replace("armeabi", "ARM EABI")         //$NON-NLS-1$  //$NON-NLS-2$
-                  .replace("x86",     "Intel x86 Atom")   //$NON-NLS-1$  //$NON-NLS-2$
-                  .replace("mips",    "MIPS")             //$NON-NLS-1$  //$NON-NLS-2$
-                  .replace("-", " ");                     //$NON-NLS-1$  //$NON-NLS-2$
+        return abi.replace("armeabi", "ARM EABI")          //$NON-NLS-1$  //$NON-NLS-2$
+                  .replace("arm64",   "ARM 64")            //$NON-NLS-1$  //$NON-NLS-2$
+                  .replace("x86",     "Intel x86 Atom")    //$NON-NLS-1$  //$NON-NLS-2$
+                  .replace("x86_64",  "Intel x86_64 Atom") //$NON-NLS-1$  //$NON-NLS-2$
+                  .replace("mips",    "MIPS")              //$NON-NLS-1$  //$NON-NLS-2$
+                  .replace("-", " ");                      //$NON-NLS-1$  //$NON-NLS-2$
     }
 
     /**
@@ -219,9 +397,30 @@ public class SystemImagePackage extends MajorRevisionPackage
      * <p/>
      * A system-image has the same {@link AndroidVersion} as the platform it depends on.
      */
-    @Override @NonNull
+    @NonNull
+    @Override
     public AndroidVersion getAndroidVersion() {
         return mVersion;
+    }
+
+    /**
+     * Returns true if the system-image belongs to a standard Android platform.
+     * In this case {@link #getAddonVendor()} returns null.
+     * <p/.
+     * Returns false if the system-image belongs to an add-on.
+     * In this case {@link #getAndroidVersion()} returns a non-null {@link IdDisplay}.
+     */
+    public boolean isPlatform() {
+        return mAddonVendor == null;
+    }
+
+    /**
+     * Returns the add-on vendor if this is an add-on system image.
+     * Returns null if this is a platform system-image.
+     */
+    @Nullable
+    public IdDisplay getAddonVendor() {
+        return mAddonVendor;
     }
 
     /**
@@ -232,7 +431,22 @@ public class SystemImagePackage extends MajorRevisionPackage
      */
     @Override
     public String installId() {
-        return "sysimg-" + mVersion.getApiString();    //$NON-NLS-1$
+        StringBuilder sb = new StringBuilder("sys-img-");   //$NON-NLS-1$
+        sb.append(getAbi()).append('-');
+        if (!isPlatform()) {
+            sb.append("addon-");
+        }
+        sb.append(SystemImage.DEFAULT_TAG.equals(getTag()) ? "android" : getTag().getId());
+        sb.append('-');
+        if (!isPlatform()) {
+            sb.append(getAddonVendor().getId()).append('-');
+        }
+        sb.append(getAndroidVersion().getApiString());
+
+        String s = sb.toString();
+        s = s.toLowerCase(Locale.US).replaceAll("[^a-z0-9_.-]+", "_").replaceAll("_+", "_");
+        return s;
+
     }
 
     /**
@@ -242,7 +456,14 @@ public class SystemImagePackage extends MajorRevisionPackage
      */
     @Override
     public String getListDescription() {
-        return String.format("%1$s System Image%2$s",
+        String ld = getListDisplay();
+        if (!ld.isEmpty()) {
+            return String.format("%1$s%2$s", ld, isObsolete() ? " (Obsolete)" : "");
+        }
+
+        boolean isDefaultTag = SystemImage.DEFAULT_TAG.equals(mTag);
+        return String.format("%1$s%2$s System Image%3$s",
+                isDefaultTag ? "" : (mTag.getDisplay() + " "),
                 getAbiDisplayName(),
                 isObsolete() ? " (Obsolete)" : "");
     }
@@ -252,8 +473,21 @@ public class SystemImagePackage extends MajorRevisionPackage
      */
     @Override
     public String getShortDescription() {
-        return String.format("%1$s System Image, Android API %2$s, revision %3$s%4$s",
+        String ld = getListDisplay();
+        if (!ld.isEmpty()) {
+            return String.format("%1$s, %2$s API %3$s, revision %4$s%5$s",
+                    ld,
+                    mAddonVendor == null ? "Android" : mAddonVendor.getDisplay(),
+                    mVersion.getApiString(),
+                    getRevision().toShortString(),
+                    isObsolete() ? " (Obsolete)" : "");
+        }
+
+        boolean isDefaultTag = SystemImage.DEFAULT_TAG.equals(mTag);
+        return String.format("%1$s%2$s System Image, %3$s API %4$s, revision %5$s%6$s",
+                isDefaultTag ? "" : (mTag.getDisplay() + " "),
                 getAbiDisplayName(),
+                mAddonVendor == null ? "Android" : mAddonVendor.getDisplay(),
                 mVersion.getApiString(),
                 getRevision().toShortString(),
                 isObsolete() ? " (Obsolete)" : "");
@@ -287,7 +521,7 @@ public class SystemImagePackage extends MajorRevisionPackage
      * Computes a potential installation folder if an archive of this package were
      * to be installed right away in the given SDK root.
      * <p/>
-     * A system-image package is typically installed in SDK/systems/platform/abi.
+     * A system-image package is typically installed in SDK/systems/platform/tag/abi.
      * The name needs to be sanitized to be acceptable as a directory name.
      *
      * @param osSdkRoot The OS path of the SDK root folder.
@@ -297,13 +531,22 @@ public class SystemImagePackage extends MajorRevisionPackage
     @Override
     public File getInstallFolder(String osSdkRoot, SdkManager sdkManager) {
         File folder = new File(osSdkRoot, SdkConstants.FD_SYSTEM_IMAGES);
-        folder = new File(folder, SystemImage.ANDROID_PREFIX + mVersion.getApiString());
+        folder = new File(folder, AndroidTargetHash.getPlatformHashString(mVersion));
 
-        // Computes a folder directory using the sanitized abi string.
+        // Computes a folder directory using the sanitized tag & abi strings.
+        String tag = mTag.getId();
+        tag = tag.toLowerCase(Locale.US);
+        tag = tag.replaceAll("[^a-z0-9_-]+", "_");      //$NON-NLS-1$ //$NON-NLS-2$
+        tag = tag.replaceAll("_+", "_");                //$NON-NLS-1$ //$NON-NLS-2$
+        tag = tag.replaceAll("-+", "-");                //$NON-NLS-1$ //$NON-NLS-2$
+
+        folder = new File(folder, tag);
+
         String abi = mAbi;
         abi = abi.toLowerCase(Locale.US);
         abi = abi.replaceAll("[^a-z0-9_-]+", "_");      //$NON-NLS-1$ //$NON-NLS-2$
         abi = abi.replaceAll("_+", "_");                //$NON-NLS-1$ //$NON-NLS-2$
+        abi = abi.replaceAll("-+", "-");                //$NON-NLS-1$ //$NON-NLS-2$
 
         folder = new File(folder, abi);
         return folder;
@@ -314,9 +557,12 @@ public class SystemImagePackage extends MajorRevisionPackage
         if (pkg instanceof SystemImagePackage) {
             SystemImagePackage newPkg = (SystemImagePackage)pkg;
 
-            // check they are the same abi and version.
-            return getAbi().equals(newPkg.getAbi()) &&
-                    getAndroidVersion().equals(newPkg.getAndroidVersion());
+            // check they are the same tag, abi and version.
+            return getTag().equals(newPkg.getTag()) &&
+                   getAbi().equals(newPkg.getAbi()) &&
+                   getAndroidVersion().equals(newPkg.getAndroidVersion()) &&
+                   (mAddonVendor == newPkg.mAddonVendor ||
+                    (mAddonVendor != null && mAddonVendor.equals(newPkg.mAddonVendor)));
         }
 
         return false;
@@ -326,7 +572,9 @@ public class SystemImagePackage extends MajorRevisionPackage
     public int hashCode() {
         final int prime = 31;
         int result = super.hashCode();
-        result = prime * result + ((mAbi == null) ? 0 : mAbi.hashCode());
+        result = prime * result + ((mAddonVendor == null) ? 0 : mAddonVendor.hashCode());
+        result = prime * result + ((mTag     == null) ? 0 : mTag.hashCode());
+        result = prime * result + ((mAbi     == null) ? 0 : mAbi.hashCode());
         result = prime * result + ((mVersion == null) ? 0 : mVersion.hashCode());
         return result;
     }
@@ -343,6 +591,20 @@ public class SystemImagePackage extends MajorRevisionPackage
             return false;
         }
         SystemImagePackage other = (SystemImagePackage) obj;
+        if (mAddonVendor == null) {
+            if (other.mAddonVendor != null) {
+                return false;
+            }
+        } else if (!mAddonVendor.equals(other.mAddonVendor)) {
+            return false;
+        }
+        if (mTag == null) {
+            if (other.mTag != null) {
+                return false;
+            }
+        } else if (!mTag.equals(other.mTag)) {
+            return false;
+        }
         if (mAbi == null) {
             if (other.mAbi != null) {
                 return false;
@@ -361,7 +623,7 @@ public class SystemImagePackage extends MajorRevisionPackage
     }
 
     /**
-     * For sys img packages, we want to add abi to the sorting key
+     * For sys img packages, we want to add tag/abi to the sorting key
      * <em>before<em/> the revision number.
      * <p/>
      * {@inheritDoc}
@@ -369,10 +631,12 @@ public class SystemImagePackage extends MajorRevisionPackage
     @Override
     protected String comparisonKey() {
         String s = super.comparisonKey();
-        int pos = s.indexOf("|r:");         //$NON-NLS-1$
+        int pos = s.indexOf("|r:");                 //$NON-NLS-1$
         assert pos > 0;
         s = s.substring(0, pos) +
-            "|abi:" + getAbiDisplayName() + //$NON-NLS-1$
+            "|vend:" + (mAddonVendor == null ? "" : mAddonVendor.getId()) + //$NON-NLS-1$ //$NON-NLS-2$
+            "|tag:" + getTag().getId() +            //$NON-NLS-1$
+            "|abi:" + getAbiDisplayName() +         //$NON-NLS-1$
             s.substring(pos);
         return s;
     }

@@ -17,6 +17,7 @@
 package com.android.sdklib.internal.repository.packages;
 
 import com.android.SdkConstants;
+import com.android.annotations.NonNull;
 import com.android.annotations.Nullable;
 import com.android.annotations.VisibleForTesting;
 import com.android.annotations.VisibleForTesting.Visibility;
@@ -25,12 +26,15 @@ import com.android.sdklib.internal.repository.IDescription;
 import com.android.sdklib.internal.repository.LocalSdkParser;
 import com.android.sdklib.internal.repository.NullTaskMonitor;
 import com.android.sdklib.internal.repository.archives.Archive;
-import com.android.sdklib.internal.repository.archives.Archive.Arch;
-import com.android.sdklib.internal.repository.archives.Archive.Os;
 import com.android.sdklib.internal.repository.sources.SdkSource;
 import com.android.sdklib.repository.FullRevision;
 import com.android.sdklib.repository.PkgProps;
 import com.android.sdklib.repository.RepoConstants;
+import com.android.sdklib.repository.descriptors.IPkgDescExtra;
+import com.android.sdklib.repository.descriptors.IdDisplay;
+import com.android.sdklib.repository.descriptors.PkgDesc;
+import com.android.sdklib.repository.descriptors.PkgDescExtra;
+import com.android.sdklib.repository.local.LocalExtraPkgInfo;
 import com.android.utils.NullLogger;
 
 import org.w3c.dom.Node;
@@ -57,14 +61,11 @@ public class ExtraPackage extends NoPreviewRevisionPackage
     private final String mDisplayName;
 
     /**
-     * The vendor id name. It is a simple alphanumeric string [a-zA-Z0-9_-].
+     * The vendor id + name.
+     * The id is a simple alphanumeric string [a-zA-Z0-9_-].
+     * The display name is used in the UI to represent the vendor. It can be anything.
      */
-    private final String mVendorId;
-
-    /**
-     * The vendor display name. Used in the UI to represent the vendor. It can be anything.
-     */
-    private final String mVendorDisplay;
+    private final IdDisplay mVendor;
 
     /**
      * The sub-folder name. It must be a non-empty single-segment path.
@@ -88,6 +89,8 @@ public class ExtraPackage extends NoPreviewRevisionPackage
      * The array can be empty but not null.
      */
     private final String[] mProjectFiles;
+
+    private final IPkgDescExtra mPkgDesc;
 
     /**
      * Creates a new tool package from the attributes and elements of the given XML node.
@@ -136,12 +139,11 @@ public class ExtraPackage extends NoPreviewRevisionPackage
             // The vendor-display name can be empty, in which case we use the vendor-id.
             vname = vid;
         }
-        mVendorDisplay = vname.trim();
-        mVendorId      = vid.trim();
+        mVendor = new IdDisplay(vid.trim(), vname.trim());
 
         if (name.length() == 0) {
             // If name is missing, use the <path> attribute as done in an addon-3 schema.
-            name = getPrettyName();
+            name = LocalExtraPkgInfo.getPrettyName(mVendor, mPath);
         }
         mDisplayName   = name.trim();
 
@@ -152,6 +154,15 @@ public class ExtraPackage extends NoPreviewRevisionPackage
                 PackageParserUtils.findChildElement(packageNode, RepoConstants.NODE_PROJECT_FILES));
 
         mOldPaths = PackageParserUtils.getXmlString(packageNode, RepoConstants.NODE_OLD_PATHS);
+
+        mPkgDesc = (IPkgDescExtra) PkgDesc.Builder
+                .newExtra(mVendor,
+                          mPath,
+                          mDisplayName,
+                          getOldPaths(),
+                          getRevision())
+                .setDescriptions(this)
+                .create();
     }
 
     private String[] parseProjectFiles(Node projectFilesNode) {
@@ -195,11 +206,9 @@ public class ExtraPackage extends NoPreviewRevisionPackage
             String license,
             String description,
             String descUrl,
-            Os archiveOs,
-            Arch archiveArch,
             String archiveOsPath) {
         ExtraPackage ep = new ExtraPackage(source, props, vendor, path, revision, license,
-                description, descUrl, archiveOs, archiveArch, archiveOsPath);
+                description, descUrl, archiveOsPath);
         return ep;
     }
 
@@ -217,8 +226,6 @@ public class ExtraPackage extends NoPreviewRevisionPackage
             String license,
             String description,
             String descUrl,
-            Os archiveOs,
-            Arch archiveArch,
             String archiveOsPath) {
         super(source,
                 props,
@@ -226,8 +233,6 @@ public class ExtraPackage extends NoPreviewRevisionPackage
                 license,
                 description,
                 descUrl,
-                archiveOs,
-                archiveArch,
                 archiveOsPath);
 
         mMinToolsMixin = new MinToolsMixin(
@@ -237,8 +242,6 @@ public class ExtraPackage extends NoPreviewRevisionPackage
                 license,
                 description,
                 descUrl,
-                archiveOs,
-                archiveArch,
                 archiveOsPath);
 
         // The path argument comes before whatever could be in the properties
@@ -262,12 +265,11 @@ public class ExtraPackage extends NoPreviewRevisionPackage
             // The vendor-display name can be empty, in which case we use the vendor-id.
             vname = vid;
         }
-        mVendorDisplay = vname.trim();
-        mVendorId      = vid.trim();
+        mVendor = new IdDisplay(vid.trim(), vname.trim());
 
         if (name == null || name.length() == 0) {
             // If name is missing, use the <path> attribute as done in an addon-3 schema.
-            name = getPrettyName();
+            name = LocalExtraPkgInfo.getPrettyName(mVendor, mPath);
         }
         mDisplayName   = name.trim();
 
@@ -286,7 +288,23 @@ public class ExtraPackage extends NoPreviewRevisionPackage
                 }
             }
         }
+
         mProjectFiles = filePaths.toArray(new String[filePaths.size()]);
+
+        mPkgDesc = (IPkgDescExtra) PkgDesc.Builder
+                .newExtra(mVendor,
+                          mPath,
+                          mDisplayName,
+                          getOldPaths(),
+                          getRevision())
+                .setDescriptions(this)
+                .create();
+    }
+
+    @Override
+    @NonNull
+    public IPkgDescExtra getPkgDesc() {
+        return mPkgDesc;
     }
 
     /**
@@ -300,8 +318,8 @@ public class ExtraPackage extends NoPreviewRevisionPackage
 
         props.setProperty(PkgProps.EXTRA_PATH, mPath);
         props.setProperty(PkgProps.EXTRA_NAME_DISPLAY, mDisplayName);
-        props.setProperty(PkgProps.EXTRA_VENDOR_DISPLAY, mVendorDisplay);
-        props.setProperty(PkgProps.EXTRA_VENDOR_ID, mVendorId);
+        props.setProperty(PkgProps.EXTRA_VENDOR_DISPLAY, mVendor.getDisplay());
+        props.setProperty(PkgProps.EXTRA_VENDOR_ID, mVendor.getId());
 
         if (getMinApiLevel() != MIN_API_LEVEL_NOT_SPECIFIED) {
             props.setProperty(PkgProps.EXTRA_MIN_API_LEVEL, Integer.toString(getMinApiLevel()));
@@ -371,10 +389,7 @@ public class ExtraPackage extends NoPreviewRevisionPackage
      * @return A list of old paths. Can be empty but not null.
      */
     public String[] getOldPaths() {
-        if (mOldPaths == null || mOldPaths.length() == 0) {
-            return new String[0];
-        }
-        return mOldPaths.split(";");  //$NON-NLS-1$
+        return PkgDescExtra.convertOldPaths(mOldPaths);
     }
 
     /**
@@ -401,11 +416,11 @@ public class ExtraPackage extends NoPreviewRevisionPackage
      * Returns the vendor id.
      */
     public String getVendorId() {
-        return mVendorId;
+        return mVendor.getId();
     }
 
     public String getVendorDisplay() {
-        return mVendorDisplay;
+        return mVendor.getDisplay();
     }
 
     public String getDisplayName() {
@@ -435,57 +450,6 @@ public class ExtraPackage extends NoPreviewRevisionPackage
     }
 
     /**
-     * Used to produce a suitable name-display based on the current {@link #mPath}
-     * and {@link #mVendorDisplay} in addon-3 schemas.
-     */
-    private String getPrettyName() {
-        String name = mPath;
-
-        // In the past, we used to save the extras in a folder vendor-path,
-        // and that "vendor" would end up in the path when we reload the extra from
-        // disk. Detect this and compensate.
-        if (mVendorDisplay != null && mVendorDisplay.length() > 0) {
-            if (name.startsWith(mVendorDisplay + "-")) {  //$NON-NLS-1$
-                name = name.substring(mVendorDisplay.length() + 1);
-            }
-        }
-
-        // Uniformize all spaces in the name
-        if (name != null) {
-            name = name.replaceAll("[ _\t\f-]+", " ").trim();   //$NON-NLS-1$ //$NON-NLS-2$
-        }
-        if (name == null || name.length() == 0) {
-            name = "Unknown Extra";
-        }
-
-        if (mVendorDisplay != null && mVendorDisplay.length() > 0) {
-            name = mVendorDisplay + " " + name;  //$NON-NLS-1$
-            name = name.replaceAll("[ _\t\f-]+", " ").trim();   //$NON-NLS-1$ //$NON-NLS-2$
-        }
-
-        // Look at all lower case characters in range [1..n-1] and replace them by an upper
-        // case if they are preceded by a space. Also upper cases the first character of the
-        // string.
-        boolean changed = false;
-        char[] chars = name.toCharArray();
-        for (int n = chars.length - 1, i = 0; i < n; i++) {
-            if (Character.isLowerCase(chars[i]) && (i == 0 || chars[i - 1] == ' ')) {
-                chars[i] = Character.toUpperCase(chars[i]);
-                changed = true;
-            }
-        }
-        if (changed) {
-            name = new String(chars);
-        }
-
-        // Special case: reformat a few typical acronyms.
-        name = name.replaceAll(" Usb ", " USB ");   //$NON-NLS-1$
-        name = name.replaceAll(" Api ", " API ");   //$NON-NLS-1$
-
-        return name;
-    }
-
-    /**
      * Returns a string identifier to install this package from the command line.
      * For extras, we use "extra-vendor-path".
      * <p/>
@@ -505,6 +469,11 @@ public class ExtraPackage extends NoPreviewRevisionPackage
      */
     @Override
     public String getListDescription() {
+        String ld = getListDisplay();
+        if (!ld.isEmpty()) {
+            return String.format("%1$s%2$s", ld, isObsolete() ? " (Obsolete)" : "");
+        }
+
         String s = String.format("%1$s%2$s",
                 getDisplayName(),
                 isObsolete() ? " (Obsolete)" : "");  //$NON-NLS-2$
@@ -517,6 +486,14 @@ public class ExtraPackage extends NoPreviewRevisionPackage
      */
     @Override
     public String getShortDescription() {
+        String ld = getListDisplay();
+        if (!ld.isEmpty()) {
+            return String.format("%1$s, revision %2$s%3$s",
+                    ld,
+                    getRevision().toShortString(),
+                    isObsolete() ? " (Obsolete)" : "");
+        }
+
         String s = String.format("%1$s, revision %2$s%3$s",
                 getDisplayName(),
                 getRevision().toShortString(),
@@ -631,64 +608,7 @@ public class ExtraPackage extends NoPreviewRevisionPackage
         // Extra packages are similar if they have the same path and vendor
         if (pkg instanceof ExtraPackage) {
             ExtraPackage ep = (ExtraPackage) pkg;
-
-            String[] epOldPaths = ep.getOldPaths();
-            int lenEpOldPaths = epOldPaths.length;
-            for (int indexEp = -1; indexEp < lenEpOldPaths; indexEp++) {
-                if (sameVendorAndPath(
-                        mVendorId,    mPath,
-                        ep.mVendorId, indexEp   < 0 ? ep.mPath : epOldPaths[indexEp])) {
-                    return true;
-                }
-            }
-
-            String[] thisOldPaths = getOldPaths();
-            int lenThisOldPaths = thisOldPaths.length;
-            for (int indexThis = -1; indexThis < lenThisOldPaths; indexThis++) {
-                if (sameVendorAndPath(
-                        mVendorId,    indexThis < 0 ? mPath    : thisOldPaths[indexThis],
-                        ep.mVendorId, ep.mPath)) {
-                    return true;
-                }
-            }
-        }
-
-        return false;
-    }
-
-    private static boolean sameVendorAndPath(
-            String thisVendor, String thisPath,
-            String otherVendor, String otherPath) {
-        // To be backward compatible, we need to support the old vendor-path form
-        // in either the current or the remote package.
-        //
-        // The vendor test below needs to account for an old installed package
-        // (e.g. with an install path of vendor-name) that has then been updated
-        // in-place and thus when reloaded contains the vendor name in both the
-        // path and the vendor attributes.
-        if (otherPath != null && thisPath != null && thisVendor != null) {
-            if (otherPath.equals(thisVendor + '-' + thisPath) &&
-                    (otherVendor == null ||
-                     otherVendor.length() == 0 ||
-                     otherVendor.equals(thisVendor))) {
-                return true;
-            }
-        }
-        if (thisPath != null && otherPath != null && otherVendor != null) {
-            if (thisPath.equals(otherVendor + '-' + otherPath) &&
-                    (thisVendor == null ||
-                     thisVendor.length() == 0 ||
-                     thisVendor.equals(otherVendor))) {
-                return true;
-            }
-        }
-
-
-        if (thisPath != null && thisPath.equals(otherPath)) {
-            if ((thisVendor == null && otherVendor == null) ||
-                (thisVendor != null && thisVendor.equals(otherVendor))) {
-                return true;
-            }
+            return PkgDescExtra.compatibleVendorAndPath(mPkgDesc, ep.mPkgDesc);
         }
 
         return false;
@@ -706,7 +626,7 @@ public class ExtraPackage extends NoPreviewRevisionPackage
         int pos = s.indexOf("|r:");         //$NON-NLS-1$
         assert pos > 0;
         s = s.substring(0, pos) +
-            "|ve:" + getVendorId() +          //$NON-NLS-1$
+            "|ve:" + getVendorId() +        //$NON-NLS-1$
             "|pa:" + getPath() +            //$NON-NLS-1$
             s.substring(pos);
         return s;
@@ -737,7 +657,7 @@ public class ExtraPackage extends NoPreviewRevisionPackage
         result = prime * result + mMinApiLevel;
         result = prime * result + ((mPath == null) ? 0 : mPath.hashCode());
         result = prime * result + Arrays.hashCode(mProjectFiles);
-        result = prime * result + ((mVendorDisplay == null) ? 0 : mVendorDisplay.hashCode());
+        result = prime * result + ((mVendor == null) ? 0 : mVendor.hashCode());
         return result;
     }
 
@@ -766,11 +686,11 @@ public class ExtraPackage extends NoPreviewRevisionPackage
         if (!Arrays.equals(mProjectFiles, other.mProjectFiles)) {
             return false;
         }
-        if (mVendorDisplay == null) {
-            if (other.mVendorDisplay != null) {
+        if (mVendor == null) {
+            if (other.mVendor != null) {
                 return false;
             }
-        } else if (!mVendorDisplay.equals(other.mVendorDisplay)) {
+        } else if (!mVendor.equals(other.mVendor)) {
             return false;
         }
         return mMinToolsMixin.equals(obj);

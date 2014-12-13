@@ -27,7 +27,6 @@ import static com.android.SdkConstants.ATTR_PACKAGE;
 import static com.android.SdkConstants.ATTR_STYLE;
 import static com.android.SdkConstants.TOOLS_URI;
 import static com.android.SdkConstants.VIEW_TAG;
-import static com.android.SdkConstants.XMLNS_PREFIX;
 import static com.android.resources.ResourceFolderType.ANIM;
 import static com.android.resources.ResourceFolderType.ANIMATOR;
 import static com.android.resources.ResourceFolderType.COLOR;
@@ -52,7 +51,6 @@ import org.w3c.dom.Element;
 import org.w3c.dom.Node;
 
 import java.util.Collection;
-import java.util.EnumSet;
 import java.util.HashSet;
 import java.util.Set;
 
@@ -67,7 +65,6 @@ public class DetectMissingPrefix extends LayoutDetector {
     public static final Issue MISSING_NAMESPACE = Issue.create(
             "MissingPrefix", //$NON-NLS-1$
             "Missing Android XML namespace",
-            "Detect XML attributes not using the Android namespace",
             "Most Android views have attributes in the Android namespace. When referencing " +
             "these attributes you *must* include the namespace prefix, or your attribute will " +
             "be interpreted by `aapt` as just a custom attribute.\n" +
@@ -80,7 +77,7 @@ public class DetectMissingPrefix extends LayoutDetector {
             Severity.ERROR,
             new Implementation(
                     DetectMissingPrefix.class,
-                    EnumSet.of(Scope.MANIFEST, Scope.RESOURCE_FILE),
+                    Scope.MANIFEST_AND_RESOURCE_SCOPE,
                     Scope.MANIFEST_SCOPE, Scope.RESOURCE_FILE_SCOPE));
 
     private static final Set<String> NO_PREFIX_ATTRS = new HashSet<String>();
@@ -135,14 +132,20 @@ public class DetectMissingPrefix extends LayoutDetector {
                 return;
             }
 
-            if (name.startsWith(XMLNS_PREFIX)) {
+            if (name.indexOf(':') != -1) {
+                // Don't flag warnings for attributes that already have a different
+                // namespace! This doesn't usually happen when lint is run from the
+                // command line, since (with the exception of xmlns: declaration attributes)
+                // an attribute shouldn't have a prefix *and* have no namespace, but
+                // when lint is run in the IDE (with a more fault-tolerant XML parser)
+                // this can happen, and we don't want to flag erroneous/misleading lint
+                // errors in this case.
                 return;
             }
 
             context.report(MISSING_NAMESPACE, attribute,
                     context.getLocation(attribute),
-                    "Attribute is missing the Android namespace prefix",
-                    null);
+                    "Attribute is missing the Android namespace prefix");
         } else if (!ANDROID_URI.equals(uri)
                 && !TOOLS_URI.equals(uri)
                 && context.getResourceFolderType() == ResourceFolderType.LAYOUT
@@ -156,9 +159,8 @@ public class DetectMissingPrefix extends LayoutDetector {
                 && !isCustomView((Element) attribute.getOwnerElement().getParentNode())) {
             context.report(MISSING_NAMESPACE, attribute,
                     context.getLocation(attribute),
-                    String.format("Unexpected namespace prefix \"%1$s\" found for tag %2$s",
-                            attribute.getPrefix(), attribute.getOwnerElement().getTagName()),
-                            null);
+                    String.format("Unexpected namespace prefix \"%1$s\" found for tag `%2$s`",
+                            attribute.getPrefix(), attribute.getOwnerElement().getTagName()));
         }
     }
 

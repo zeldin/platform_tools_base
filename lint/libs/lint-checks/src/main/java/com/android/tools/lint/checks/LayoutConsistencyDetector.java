@@ -92,7 +92,6 @@ public class LayoutConsistencyDetector extends LayoutDetector implements Detecto
     public static final Issue INCONSISTENT_IDS = Issue.create(
             "InconsistentLayout", //$NON-NLS-1$
             "Inconsistent Layouts",
-            "Checks that layout variations are consistent",
 
             "This check ensures that a layout resource which is defined in multiple "
             + "resource folders, specifies the same set of widgets.\n"
@@ -195,7 +194,7 @@ public class LayoutConsistencyDetector extends LayoutDetector implements Detecto
         String id = getId(element);
         if (id != null) {
             if (map.containsKey(id)) {
-                if (context.getDriver().isSuppressed(INCONSISTENT_IDS, element)) {
+                if (context.getDriver().isSuppressed(context, INCONSISTENT_IDS, element)) {
                     map.remove(id);
                     return;
                 }
@@ -393,7 +392,7 @@ public class LayoutConsistencyDetector extends LayoutDetector implements Detecto
                 if (locations != null) {
                     Location location = chainLocations(locations);
 
-                    context.report(INCONSISTENT_IDS, location, message, null);
+                    context.report(INCONSISTENT_IDS, location, message);
                 }
             }
         }

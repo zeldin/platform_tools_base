@@ -28,7 +28,10 @@ import com.android.tools.lint.detector.api.Location.Handle;
 import com.android.tools.lint.detector.api.Position;
 import com.android.tools.lint.detector.api.Project;
 import com.android.tools.lint.detector.api.Severity;
+import com.android.tools.lint.detector.api.TextFormat;
 import com.android.tools.lint.detector.api.XmlContext;
+
+import junit.framework.TestCase;
 
 import org.w3c.dom.Attr;
 import org.w3c.dom.Document;
@@ -39,8 +42,6 @@ import java.io.BufferedWriter;
 import java.io.File;
 import java.io.FileWriter;
 import java.io.Writer;
-
-import junit.framework.TestCase;
 
 @SuppressWarnings("javadoc")
 public class LintCliXmlParserTest extends TestCase {
@@ -73,7 +74,7 @@ public class LintCliXmlParserTest extends TestCase {
         LintClient client = new TestClient();
         LintDriver driver = new LintDriver(new BuiltinIssueRegistry(), client);
         Project project = Project.create(client, file.getParentFile(), file.getParentFile());
-        XmlContext context = new XmlContext(driver, project, null, file, null);
+        XmlContext context = new XmlContext(driver, project, null, file, null, parser);
         Document document = parser.parseXml(context);
         assertNotNull(document);
 
@@ -147,7 +148,7 @@ public class LintCliXmlParserTest extends TestCase {
         LintClient client = new TestClient();
         LintDriver driver = new LintDriver(new BuiltinIssueRegistry(), client);
         Project project = Project.create(client, file.getParentFile(), file.getParentFile());
-        XmlContext context = new XmlContext(driver, project, null, file, null);
+        XmlContext context = new XmlContext(driver, project, null, file, null, parser);
         Document document = parser.parseXml(context);
         assertNotNull(document);
 
@@ -162,7 +163,7 @@ public class LintCliXmlParserTest extends TestCase {
                 @NonNull Severity severity,
                 @Nullable Location location,
                 @NonNull String message,
-                @Nullable Object data) {
+                @NonNull TextFormat format) {
             System.out.println(location + ":" + message);
         }
     }

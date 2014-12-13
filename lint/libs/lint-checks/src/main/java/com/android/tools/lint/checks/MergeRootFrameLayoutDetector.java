@@ -88,7 +88,6 @@ public class MergeRootFrameLayoutDetector extends LayoutDetector implements Dete
     public static final Issue ISSUE = Issue.create(
             "MergeRootFrame", //$NON-NLS-1$
             "FrameLayout can be replaced with `<merge>` tag",
-            "Checks whether a root <FrameLayout> can be replaced with a `<merge>` tag",
 
             "If a `<FrameLayout>` is the root of a layout and does not provide background " +
             "or padding etc, it can often be replaced with a `<merge>` tag which is slightly " +
@@ -131,14 +130,14 @@ public class MergeRootFrameLayoutDetector extends LayoutDetector implements Dete
 
                     Object clientData = handle.getClientData();
                     if (clientData instanceof Node) {
-                        if (context.getDriver().isSuppressed(ISSUE, (Node) clientData)) {
+                        if (context.getDriver().isSuppressed(null, ISSUE, (Node) clientData)) {
                             return;
                         }
                     }
 
                     Location location = handle.resolve();
                     context.report(ISSUE, location,
-                            "This <FrameLayout> can be replaced with a <merge> tag", null);
+                            "This `<FrameLayout>` can be replaced with a `<merge>` tag");
                 }
             }
         }
@@ -169,7 +168,7 @@ public class MergeRootFrameLayoutDetector extends LayoutDetector implements Dete
                     && !element.hasAttributeNS(ANDROID_URI, ATTR_FOREGROUND)
                     && !hasPadding(element)) {
                 String layout = LintUtils.getLayoutName(context.file);
-                Handle handle = context.parser.createLocationHandle(context, element);
+                Handle handle = context.createLocationHandle(element);
                 handle.setClientData(element);
 
                 if (!context.getProject().getReportIssues()) {

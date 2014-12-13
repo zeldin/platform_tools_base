@@ -16,11 +16,14 @@
 
 package com.android.tools.lint;
 
+import static com.android.tools.lint.LintCliFlags.ERRNO_EXISTS;
+import static com.android.tools.lint.LintCliFlags.ERRNO_INVALID_ARGS;
+import static com.android.tools.lint.LintCliFlags.ERRNO_SUCCESS;
+
 import com.android.tools.lint.checks.AbstractCheckTest;
 import com.android.tools.lint.checks.AccessibilityDetector;
 import com.android.tools.lint.detector.api.Detector;
 import com.android.tools.lint.detector.api.Issue;
-import com.google.common.io.Files;
 
 import java.io.ByteArrayOutputStream;
 import java.io.File;
@@ -44,7 +47,8 @@ public class MainTest extends AbstractCheckTest {
         }
     }
 
-    private void checkDriver(String expectedOutput, String expectedError, String[] args)
+    private void checkDriver(String expectedOutput, String expectedError, int expectedExitCode,
+            String[] args)
             throws Exception {
         PrintStream previousOut = System.out;
         PrintStream previousErr = System.err;
@@ -63,7 +67,7 @@ public class MainTest extends AbstractCheckTest {
                 }
                 @Override
                 public void checkExit(int status) {
-                    throw new ExitException();
+                    throw new ExitException(status);
                 }
             });
 
@@ -72,14 +76,17 @@ public class MainTest extends AbstractCheckTest {
             final ByteArrayOutputStream error = new ByteArrayOutputStream();
             System.setErr(new PrintStream(error));
 
+            int exitCode = 0xCAFEBABE; // not set
             try {
                 Main.main(args);
             } catch (ExitException e) {
                 // Allow
+                exitCode = e.getStatus();
             }
 
             assertEquals(expectedError, cleanup(error.toString()));
             assertEquals(expectedOutput, cleanup(output.toString()));
+            assertEquals(expectedExitCode, exitCode);
         } finally {
             // Re-enable system exit for unit test
             System.setSecurityManager(null);
@@ -105,6 +112,9 @@ public class MainTest extends AbstractCheckTest {
         // Expected error
         "",
 
+        // Expected exit code
+        ERRNO_SUCCESS,
+
         // Args
         new String[] {
                 "--check",
@@ -121,8 +131,7 @@ public class MainTest extends AbstractCheckTest {
         // Expected output
         "NewApi\n" +
         "------\n" +
-        "Summary: Finds API accesses to APIs that are not supported in all targeted API\n" +
-        "versions\n" +
+        "Summary: Calling new methods on older versions\n" +
         "\n" +
         "Priority: 6 / 10\n" +
         "Severity: Error\n" +
@@ -133,7 +142,7 @@ public class MainTest extends AbstractCheckTest {
         "application (according to its minimum SDK attribute in the manifest).\n" +
         "\n" +
         "If you really want to use this API and don't need to support older devices\n" +
-        "just set the minSdkVersion in your AndroidManifest.xml file.\n" +
+        "just set the minSdkVersion in your build.gradle or AndroidManifest.xml files.\n" +
         "If your code is deliberately accessing newer APIs, and you have ensured (e.g.\n" +
         "with conditional execution) that this code will only ever be called on a\n" +
         "supported platform, then you can annotate your class or method with the\n" +
@@ -142,7 +151,7 @@ public class MainTest extends AbstractCheckTest {
         "file's minimum SDK as the required API level.\n" +
         "\n" +
         "If you are deliberately setting android: attributes in style definitions, make\n" +
-        "sure you place this in a values-v11 folder in order to avoid running into\n" +
+        "sure you place this in a values-vNN folder in order to avoid running into\n" +
         "runtime conflicts on certain devices where manufacturers have added custom\n" +
         "attributes whose ids conflict with the new ones on later platforms.\n" +
         "\n" +
@@ -153,6 +162,9 @@ public class MainTest extends AbstractCheckTest {
 
         // Expected error
         "",
+
+        // Expected exit code
+        ERRNO_SUCCESS,
 
         // Args
         new String[] {
@@ -166,7 +178,7 @@ public class MainTest extends AbstractCheckTest {
                 // Expected output
                 + "SdCardPath\n"
                 + "----------\n"
-                + "Summary: Looks for hardcoded references to /sdcard\n"
+                + "Summary: Hardcoded reference to /sdcard\n"
                 + "\n"
                 + "Priority: 6 / 10\n"
                 + "Severity: Warning\n"
@@ -185,6 +197,9 @@ public class MainTest extends AbstractCheckTest {
                 // Expected error
                 "",
 
+                // Expected exit code
+                ERRNO_SUCCESS,
+
                 // Args
                 new String[] {
                         "--show",
@@ -196,6 +211,9 @@ public class MainTest extends AbstractCheckTest {
         checkDriver(
         "",
         "Library foo.jar does not exist.\n",
+
+        // Expected exit code
+        ERRNO_INVALID_ARGS,
 
         // Args
         new String[] {
@@ -211,6 +229,9 @@ public class MainTest extends AbstractCheckTest {
         checkDriver(
         "",
         "The --sources, --classpath, --libraries and --resources arguments can only be used with a single project\n",
+
+        // Expected exit code
+        ERRNO_INVALID_ARGS,
 
         // Args
         new String[] {
@@ -247,6 +268,9 @@ public class MainTest extends AbstractCheckTest {
                 + "    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n"
                 + "0 errors, 4 warnings\n", // Expected output
                 "",
+
+                // Expected exit code
+                ERRNO_SUCCESS,
 
                 // Args
                 new String[] {
@@ -285,6 +309,9 @@ public class MainTest extends AbstractCheckTest {
                 + "    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n"
                 + "0 errors, 4 warnings\n", // Expected output
                 "",
+
+                // Expected exit code
+                ERRNO_SUCCESS,
 
                 // Args
                 new String[] {
@@ -327,6 +354,9 @@ public class MainTest extends AbstractCheckTest {
         "0 errors, 5 warnings\n",
         "",
 
+        // Expected exit code
+        ERRNO_SUCCESS,
+
         // Args
         new String[] {
                 "--check",
@@ -348,9 +378,11 @@ public class MainTest extends AbstractCheckTest {
         checkDriver(
         "\n" +
         "Scanning MainTest_testLibraries: \n" +
-        "\n" +
         "No issues found.\n",
         "",
+
+        // Expected exit code
+        ERRNO_SUCCESS,
 
         // Args
         new String[] {
@@ -373,8 +405,15 @@ public class MainTest extends AbstractCheckTest {
     private static class ExitException extends SecurityException {
         private static final long serialVersionUID = 1L;
 
-        private ExitException() {
+        private final int mStatus;
+
+        public ExitException(int status) {
             super("Unit test");
+            mStatus = status;
+        }
+
+        public int getStatus() {
+            return mStatus;
         }
     }
 
@@ -421,13 +460,13 @@ public class MainTest extends AbstractCheckTest {
         );
         checkDriver(""
                 + "\n"
-                + "Scanning MainTest_testGradle: \n"
-                + "MainTest_testGradle: Error: \"MainTest_testGradle\" is a Gradle project. "
-                + "To correctly analyze Gradle projects, you should run \"gradlew :lint\" "
-                + "instead. [LintError]\n"
+                + "MainTest_testGradle: Error: \"MainTest_testGradle\" is a Gradle project. To correctly analyze Gradle projects, you should run \"gradlew :lint\" instead. [LintError]\n"
                 + "1 errors, 0 warnings\n",
 
                 "",
+
+                // Expected exit code
+                ERRNO_SUCCESS,
 
                 // Args
                 new String[] {
@@ -452,6 +491,9 @@ public class MainTest extends AbstractCheckTest {
 
                 "",
 
+                // Expected exit code
+                ERRNO_SUCCESS,
+
                 // Args
                 new String[]{
                         "--text",
@@ -468,6 +510,9 @@ public class MainTest extends AbstractCheckTest {
 
                 "Cannot write XML output file /TESTROOT/build/foo.xml\n", // Expected error
 
+                // Expected exit code
+                ERRNO_EXISTS,
+
                 // Args
                 new String[] {
                         "--xml",
@@ -480,6 +525,9 @@ public class MainTest extends AbstractCheckTest {
 
                 "Cannot write HTML output file /TESTROOT/build/foo.html\n", // Expected error
 
+                // Expected exit code
+                ERRNO_EXISTS,
+
                 // Args
                 new String[] {
                         "--html",
@@ -491,6 +539,9 @@ public class MainTest extends AbstractCheckTest {
                 "", // Expected output
 
                 "Cannot write text output file /TESTROOT/build/foo.text\n", // Expected error
+
+                // Expected exit code
+                ERRNO_EXISTS,
 
                 // Args
                 new String[] {
